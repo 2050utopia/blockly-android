@@ -14,67 +14,83 @@
  */
 package com.google.blockly.model;
 
-import android.test.AndroidTestCase;
+import android.content.Context;
+import android.support.test.InstrumentationRegistry;
 
-import com.google.blockly.android.R;
+import com.google.blockly.android.BlocklyTestCase;
 import com.google.blockly.android.control.BlocklyController;
+import com.google.blockly.utils.BlockLoadingException;
+
+import org.junit.Before;
+import org.junit.Rule;
+import org.junit.Test;
+import org.junit.rules.ExpectedException;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 
+import static com.google.common.truth.Truth.assertThat;
+import static com.google.common.truth.Truth.assertWithMessage;
+
 /**
  * Tests for {@link Workspace}.
  */
-public class WorkspaceTest extends AndroidTestCase {
+public class WorkspaceTest extends BlocklyTestCase {
 
-    public static final String WORKSPACE_XML_START =
+    private static final String WORKSPACE_XML_START =
             "<xml xmlns=\"http://www.w3.org/1999/xhtml\">";
 
-    public static final String WORKSPACE_XML_END = "</xml>";
+    private static final String WORKSPACE_XML_END = "</xml>";
 
-    public static final String BAD_XML = "<type=\"xml_no_name\">";
+    private static final String BAD_XML = "<type=\"xml_no_name\">";
 
-    public static final String EMPTY_WORKSPACE =
+    private static final String EMPTY_WORKSPACE =
             "\r\n<xml xmlns=\"http://www.w3.org/1999/xhtml\" />";
     private Workspace mWorkspace;
 
-    @Override
-    protected void setUp() throws Exception {
-        // TODO(#84): Move test_blocks.json to the test app's resources.
-        BlocklyController.Builder builder = new BlocklyController.Builder(getContext());
-        builder.addBlockDefinitions(R.raw.test_blocks);
+    @Rule
+    public ExpectedException thrown = ExpectedException.none();
+
+    @Before
+    public void setUp() throws Exception {
+        configureForUIThread();
+        Context context = InstrumentationRegistry.getContext();
+        BlocklyController.Builder builder = new BlocklyController.Builder(context);
+        builder.addBlockDefinitionsFromAsset("default/test_blocks.json");
         BlocklyController controller = builder.build();
         mWorkspace = controller.getWorkspace();
     }
 
-    public void testSimpleXmlParsing() {
+    @Test
+    public void testSimpleXmlParsing() throws BlockLoadingException {
         mWorkspace.loadWorkspaceContents(assembleWorkspace(BlockTestStrings.SIMPLE_BLOCK));
-        assertEquals("Workspace should have one block", 1, mWorkspace.getRootBlocks().size());
+        assertWithMessage("Workspace should have one block")
+                .that(mWorkspace.getRootBlocks()).hasSize(1);
     }
 
-    public void testEmptyXmlParsing() {
+    @Test
+    public void testEmptyXmlParsing() throws BlockLoadingException {
         // Normal end tag.
         mWorkspace.loadWorkspaceContents(assembleWorkspace(""));
-        assertEquals("Workspace should be empty", 0, mWorkspace.getRootBlocks().size());
+        assertWithMessage("Workspace should be empty").that(mWorkspace.getRootBlocks()).hasSize(0);
 
         // Abbreviated end tag.
         mWorkspace.loadWorkspaceContents(new ByteArrayInputStream(EMPTY_WORKSPACE.getBytes()));
-        assertEquals("Workspace should be empty", 0, mWorkspace.getRootBlocks().size());
+        assertWithMessage("Workspace should be empty").that(mWorkspace.getRootBlocks()).hasSize(0);
     }
 
-    public void testBadXmlParsing() {
-        try {
-            mWorkspace.loadWorkspaceContents(assembleWorkspace(BAD_XML));
-            fail("Should have thrown a BlocklyParseException.");
-        } catch (BlocklyParserException expected) {
-            // expected
-        }
+    @Test
+    public void testBadXmlParsing() throws BlockLoadingException {
+        thrown.expect(BlockLoadingException.class);
+        thrown.reportMissingExceptionWithMessage("Bad workspace XML will will fail to load.");
+        mWorkspace.loadWorkspaceContents(assembleWorkspace(BAD_XML));
     }
 
+    @Test
     public void testSerialization() throws BlocklySerializerException {
         ByteArrayOutputStream os = new ByteArrayOutputStream();
         mWorkspace.serializeToXml(os);
-        assertEquals(EMPTY_WORKSPACE, os.toString());
+        assertThat(os.toString()).isEqualTo(EMPTY_WORKSPACE);
     }
 
     private static ByteArrayInputStream assembleWorkspace(String interior) {

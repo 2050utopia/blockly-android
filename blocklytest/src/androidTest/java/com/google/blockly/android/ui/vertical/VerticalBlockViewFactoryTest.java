@@ -16,65 +16,71 @@
 package com.google.blockly.android.ui.vertical;
 
 import android.support.annotation.NonNull;
-import android.test.suitebuilder.annotation.SmallTest;
 
-import com.google.blockly.android.MockitoAndroidTestCase;
-import com.google.blockly.android.R;
+import com.google.blockly.android.BlocklyTestCase;
+import com.google.blockly.android.control.BlocklyController;
 import com.google.blockly.android.control.ConnectionManager;
 import com.google.blockly.android.ui.BlockGroup;
 import com.google.blockly.android.ui.WorkspaceHelper;
 import com.google.blockly.model.Block;
 import com.google.blockly.model.BlockFactory;
+import com.google.blockly.model.BlockTemplate;
+import com.google.blockly.utils.BlockLoadingException;
 
-import org.mockito.Mock;
+import org.junit.Before;
+import org.junit.Test;
+import org.mockito.Mockito;
 
+import static com.google.common.truth.Truth.assertThat;
+import static org.mockito.Mockito.mock;
 
 /**
  * Tests for {@link VerticalBlockViewFactory}.
  */
-@SmallTest
-public class VerticalBlockViewFactoryTest extends MockitoAndroidTestCase {
+public class VerticalBlockViewFactoryTest extends BlocklyTestCase {
 
     private BlockFactory mBlockFactory;
     private VerticalBlockViewFactory mViewFactory;
-
     private BlockGroup mBlockGroup;
 
-    @Mock
+    private BlocklyController mMockController;
     private WorkspaceHelper mMockWorkspaceHelper;
-
-    @Mock
     private ConnectionManager mMockConnectionManager;
 
-    @Override
-    public void setUp() throws Exception {
-        super.setUp();
-
-        mBlockFactory = new BlockFactory(getContext(), new int[]{R.raw.test_blocks});
+    @Before
+     public void setUp() throws Exception {
+        mMockController = Mockito.mock(BlocklyController.class);
+        mMockWorkspaceHelper = mock(WorkspaceHelper.class);
+        mMockConnectionManager = mock(ConnectionManager.class);
+        mBlockFactory = new BlockFactory();
+        mBlockFactory.addJsonDefinitions(getContext().getAssets()
+                .open("default/test_blocks.json"));
+        mBlockFactory.setController(mMockController);
         mViewFactory = new VerticalBlockViewFactory(getContext(), mMockWorkspaceHelper);
         mBlockGroup = mViewFactory.buildBlockGroup();
     }
 
     // Verify construction of a BlockView for a Block with inputs.
-    public void testBuildBlockViewWithInputs() {
-        final Block block = mBlockFactory.obtainBlock(
-                "test_block_one_input_each_type", "TestBlock");
+    @Test
+    public void testBuildBlockViewWithInputs() throws BlockLoadingException {
+        final Block block = mBlockFactory.obtainBlockFrom(
+                new BlockTemplate().ofType("test_block_one_input_each_type"));
         final BlockView blockView = makeBlockView(block);
-        assertNotNull(block);
+        assertThat(block).isNotNull();
 
-        assertSame(block, blockView.getBlock());
+        assertThat(block).isSameAs(blockView.getBlock());
 
         // One InputView per Input?
-        assertEquals(3, blockView.getInputViewCount());
+        assertThat(blockView.getInputViewCount()).isEqualTo(3);
 
         for (int inputIdx = 0; inputIdx < 3; ++inputIdx) {
             // Each InputView points to an Input?
-            assertNotNull(blockView.getInputView(inputIdx).getInput());
+            assertThat(blockView.getInputView(inputIdx).getInput()).isNotNull();
             // Each InputView is a child of the BlockView?
-            assertSame(blockView.getInputView(inputIdx), blockView.getChildAt(inputIdx));
+            assertThat(blockView.getInputView(inputIdx)).isSameAs(blockView.getChildAt(inputIdx));
             // Each input view points to the correct Input?
-            assertSame(block.getInputs().get(inputIdx),
-                    blockView.getInputView(inputIdx).getInput());
+            assertThat(block.getInputs().get(inputIdx))
+                    .isSameAs(blockView.getInputView(inputIdx).getInput());
         }
     }
 

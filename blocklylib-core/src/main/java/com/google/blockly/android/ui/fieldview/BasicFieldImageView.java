@@ -19,30 +19,60 @@ import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.os.AsyncTask;
+import android.support.annotation.UiThread;
+import android.support.annotation.VisibleForTesting;
 import android.util.AttributeSet;
-import android.widget.ImageView;
+import android.util.Base64;
+import android.util.Log;
 
 import com.google.blockly.model.Field;
 import com.google.blockly.model.FieldImage;
 
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URL;
+import java.util.regex.Pattern;
 
 /**
- * Renders an image bitmap.
+ * Renders an image bitmap. The FieldImage source can be any of the following:
+ * <ul>
+ *     <li>{@code http:} or {@code https:} URL</li>
+ *     <li>{@code data:} URI</li>
+ *     <li>{@code file:///android_assets/} URL</li>
+ *     <li>A relative path in the project's {@code assets/} directory</li>
+ * </ul>
+ * <p/>
+ * Any image format recognized by the Android device's BitmapFactory is valid. Usually this is a
+ * {@code .jpg} or {@code .png}.
  */
-public class BasicFieldImageView extends ImageView implements FieldView {
-    protected final FieldImage.Observer mFieldObserver = new FieldImage.Observer() {
-        @Override
-        public void onImageChanged(FieldImage field, String newSource,
-                                   int newWidth, int newHeight) {
+public class BasicFieldImageView extends android.support.v7.widget.AppCompatImageView implements
+        FieldView {
+    private static String TAG = "BasicFieldImageView";
 
-            loadImageFromSource(newSource);
+    private static final Pattern HTTP_URL_PATTERN = Pattern.compile("https?://.*");
+    private static final Pattern DATA_URL_PATTERN = Pattern.compile("data:(.*)");
+    private static final String FILE_ASSET_URL_PREFIX = "file:///android_assets/";
+
+    protected final Field.Observer mFieldObserver = new Field.Observer() {
+        @Override
+        public void onValueChanged(Field field, String newValue, String oldValue) {
+            synchronized (mImageFieldLock) {
+                if (mImageField == field) {
+                    String source = mImageField.getSource();
+                    if (source.equals(mImageSrc)) {
+                        updateViewSize();
+                    } else {
+                        startLoadingImage(source);
+                    }
+                }
+            }
         }
     };
 
     protected FieldImage mImageField;
+    protected Object mImageFieldLock = new Object();
+    protected String mImageSrc = null;
 
     /**
      * Constructs a new {@link BasicFieldImageView}.
@@ -61,6 +91,7 @@ public class BasicFieldImageView extends ImageView implements FieldView {
         super(context, attrs, defStyleAttr);
     }
 
+    @UiThread
     @Override
     public void setField(Field field) {
         FieldImage imageField = (FieldImage) field;
@@ -68,15 +99,17 @@ public class BasicFieldImageView extends ImageView implements FieldView {
             return;
         }
 
-        if (mImageField != null) {
-            mImageField.unregisterObserver(mFieldObserver);
-        }
-        mImageField = imageField;
-        if (mImageField != null) {
-            loadImageFromSource(mImageField.getSource());
-            mImageField.registerObserver(mFieldObserver);
-        } else {
-            // TODO(#44): Set image to default 'no image' default
+        synchronized (mImageFieldLock) {
+            if (mImageField != null) {
+                mImageField.unregisterObserver(mFieldObserver);
+            }
+            mImageField = imageField;
+            if (mImageField != null) {
+                startLoadingImage(mImageField.getSource());
+                mImageField.registerObserver(mFieldObserver);
+            } else {
+                // TODO(#44): Set image to default 'no image' default
+            }
         }
     }
 
@@ -92,31 +125,44 @@ public class BasicFieldImageView extends ImageView implements FieldView {
 
     /**
      * Asynchronously load and set image bitmap.
-     * <p/>
-     * If a bitmap cannot be read from the given source, a default bitmap is set instead.
-     *
-     * @param source The source URI of the image to load.
      */
-    protected void loadImageFromSource(String source) {
+    @Deprecated // Use startLoadingImage(String) below. Deprecated 2017 Oct 19.
+    protected void startLoadingImage() {
+        startLoadingImage(mImageField.getSource());
+    }
+
+    /**
+     * Asynchronously load and set image bitmap from the specified source string.
+     * @param source The URI source of the image.
+     */
+    // TODO(#44): Provide a default image if the image loading fails.
+    protected void startLoadingImage(final String source) {
+        // Do I/O in the background
         new AsyncTask<String, Void, Bitmap>() {
             @Override
             protected Bitmap doInBackground(String... strings) {
                 try {
-                    final InputStream stream = (InputStream) new URL(strings[0]).getContent();
-                    try {
-                        return BitmapFactory.decodeStream(stream);
-                    } finally {
-                        stream.close();
+                    InputStream stream = getStreamForSource(source);
+                    if (stream != null) {
+                        try {
+                            return BitmapFactory.decodeStream(stream);
+                        } finally {
+                            stream.close();
+                        }
                     }
-                } catch (IOException ex) {
-                    return null;
+                    Log.w(TAG, "Unable to load image \"" + source + "\"");
+                } catch (IOException e) {
+                    Log.w(TAG, "Unable to load image \"" + source + "\"", e);
                 }
+                return null;
             }
 
             @Override
             protected void onPostExecute(Bitmap bitmap) {
                 if (bitmap != null) {
                     setImageBitmap(bitmap);
+                    mImageSrc = source;
+                    updateViewSize();
                 } else {
                     // TODO(#44): identify and bundle as a resource a suitable default
                     // "cannot load" bitmap.
@@ -124,5 +170,44 @@ public class BasicFieldImageView extends ImageView implements FieldView {
                 requestLayout();
             }
         }.execute(source);
+    }
+
+    @VisibleForTesting
+    InputStream getStreamForSource(String source) throws IOException {
+        if (HTTP_URL_PATTERN.matcher(source).matches()) {
+            return (InputStream) new URL(source).getContent();
+        } else if (DATA_URL_PATTERN.matcher(source).matches()) {
+            String imageDataBytes = source.substring(source.indexOf(",")+1);
+            return new ByteArrayInputStream(
+                    Base64.decode(imageDataBytes.getBytes(), Base64.DEFAULT));
+        } else {
+            String assetPath;
+            if (source.startsWith(FILE_ASSET_URL_PREFIX)) {
+                assetPath = source.substring(FILE_ASSET_URL_PREFIX.length());
+            } else if (source.startsWith("/")) {
+                assetPath = source.substring(1);
+            } else {
+                assetPath = source;
+            }
+            return getContext().getAssets().open(assetPath);
+        }
+    }
+
+    @UiThread
+    protected void updateViewSize() {
+        // Check for null b/c of https://groups.google.com/d/msg/blockly/lC91XADUiI4/Y0cLRAYQBQAJ
+        // Synchronize ImageField update. Issues #678.
+        synchronized (mImageFieldLock) {
+            if (mImageField == null) {
+                setMinimumWidth(0);
+                setMinimumHeight(0);
+            } else {
+                float density = getContext().getResources().getDisplayMetrics().density;
+                int pxWidth = (int) Math.ceil(mImageField.getWidth() * density);
+                int pxHeight = (int) Math.ceil(mImageField.getHeight() * density);
+                setMinimumWidth(pxWidth);
+                setMinimumHeight(pxHeight);
+            }
+        }
     }
 }

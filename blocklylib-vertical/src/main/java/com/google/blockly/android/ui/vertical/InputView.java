@@ -83,8 +83,8 @@ public class InputView extends AbstractInputView {
                     " must be called before each call to measure().");
         }
         mHasMeasuredFieldsAndInput = false;
-        Block block = mInput.getBlock();
-        mBlockTopPadding = mPatchManager.computeBlockTopPadding(block);
+        BlockGroup connectedBlockGroup = getConnectedBlockGroup();
+        mBlockTopPadding = mPatchManager.computeBlockGroupTopPadding(connectedBlockGroup);
 
         // Width is the width of all fields, plus padding, plus width of child.
         final int width =
@@ -92,7 +92,7 @@ public class InputView extends AbstractInputView {
 
         // Height is maximum of field height with padding or child height, and at least the minimum
         // height for an empty block.
-        final int totalPaddingHeight = mPatchManager.computeBlockTotalPaddingY(mInput.getBlock());
+        final int totalPaddingHeight = mBlockTopPadding + mPatchManager.mBlockBottomPadding;
         final int height = Math.max(mPatchManager.mMinBlockHeight,
                 Math.max(mMaxFieldHeight + totalPaddingHeight, mConnectedGroupHeight));
 
@@ -128,16 +128,6 @@ public class InputView extends AbstractInputView {
         }
 
         layoutChild();
-    }
-
-    /**
-     * @return True if and only if a coordinate is on the fields of this view, including the padding
-     * to the left and right of the fields.  Any connected inputs should handle events themselves
-     * and are thus not allowed here.
-     */
-    public boolean isOnFields(int eventX, int eventY) {
-        return (eventX >= 0 && eventX < (mFieldLayoutWidth + mPatchManager.mBlockTotalPaddingX)) &&
-                eventY >= 0 && eventY < mRowHeight;
     }
 
     /**

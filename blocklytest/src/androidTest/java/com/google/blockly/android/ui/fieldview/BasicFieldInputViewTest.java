@@ -16,60 +16,62 @@
 package com.google.blockly.android.ui.fieldview;
 
 import android.support.annotation.NonNull;
+import android.support.test.InstrumentationRegistry;
 
-import com.google.blockly.android.MockitoAndroidTestCase;
-import com.google.blockly.android.ui.WorkspaceHelper;
 import com.google.blockly.model.FieldInput;
 
-import org.mockito.Mock;
+import org.junit.Before;
+import org.junit.Test;
+
+import static com.google.common.truth.Truth.assertThat;
 
 /**
  * Tests for {@link BasicFieldInputView}.
  */
-public class BasicFieldInputViewTest extends MockitoAndroidTestCase {
+public class BasicFieldInputViewTest {
 
     private static final String INIT_TEXT_VALUE = "someTextToInitializeInput";
     private static final String SET_TEXT_VALUE = "differentTextToSet";
 
-    @Mock
-    private WorkspaceHelper mMockWorkspaceHelper;
-
     // Cannot mock final classes.
     private FieldInput mFieldInput;
 
-    @Override
-    public void setUp() throws Exception {
-        super.setUp();
-
+    @Before
+     public void setUp() throws Exception {
         mFieldInput = new FieldInput("FieldInput", INIT_TEXT_VALUE);
-        assertNotNull(mFieldInput);
+        assertThat(mFieldInput).isNotNull();
     }
 
     // Verify object instantiation.
+    @Test
     public void testInstantiation() {
         final BasicFieldInputView view = makeFieldInputView();
-        assertSame(mFieldInput, view.getField());
-        assertEquals(INIT_TEXT_VALUE, view.getText().toString());  // Fails without .toString()
+        assertThat(mFieldInput).isSameAs(view.getField());
+        assertThat(view.getText().toString())
+                .isEqualTo(INIT_TEXT_VALUE);  // Fails without .toString()
     }
 
     // Verify setting text in the view propagates to the field.
+    @Test
     public void testViewUpdatesField() {
         final BasicFieldInputView view = makeFieldInputView();
         view.setText(SET_TEXT_VALUE);
-        assertEquals(SET_TEXT_VALUE, mFieldInput.getText());
+        assertThat(mFieldInput.getText()).isEqualTo(SET_TEXT_VALUE);
     }
 
     // Verify setting text in the field propagates to the view.
+    @Test
     public void testFieldUpdatesView() {
         final BasicFieldInputView view = makeFieldInputView();
 
         mFieldInput.setText(SET_TEXT_VALUE);
-        assertEquals(SET_TEXT_VALUE, view.getText().toString());  // Fails without .toString()
+        assertThat(view.getText().toString())
+                .isEqualTo(SET_TEXT_VALUE);  // Fails without .toString()
     }
 
     @NonNull
     private BasicFieldInputView makeFieldInputView() {
-        BasicFieldInputView view = new BasicFieldInputView(getContext());
+        BasicFieldInputView view = new BasicFieldInputView(InstrumentationRegistry.getContext());
         view.onFinishInflate(); // This must be called to register the text change watcher.
         view.setField(mFieldInput);
         return view;

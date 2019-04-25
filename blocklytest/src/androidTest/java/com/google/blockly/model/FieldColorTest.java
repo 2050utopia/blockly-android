@@ -14,39 +14,81 @@
  */
 package com.google.blockly.model;
 
-import android.test.AndroidTestCase;
+import org.junit.Before;
+import org.junit.Test;
+
+import static com.google.common.truth.Truth.assertThat;
 
 /**
  * Tests for {@link FieldColor}.
  */
-public class FieldColorTest extends AndroidTestCase {
-    public void testFieldColour() {
-        FieldColor field = new FieldColor("fname", 0xaa00aa);
-        assertEquals(Field.TYPE_COLOR, field.getType());
-        assertEquals("fname", field.getName());
-        assertEquals(0xaa00aa, field.getColor());
+public class FieldColorTest {
+    private static final int INITIAL_COLOR = 0xaabbcc;
+    private static final String INITIAL_COLOR_STRING = "#aabbcc";
 
-        field = new FieldColor("fname");
-        assertEquals("fname", field.getName());
-        assertEquals(FieldColor.DEFAULT_COLOR, field.getColor());
+    FieldColor mField;
 
-        field.setColor(0xb0bb1e);
-        assertEquals(0xb0bb1e, field.getColor());
+    @Before
+    public void setUp() {
+        mField = new FieldColor("fname", INITIAL_COLOR);
+    }
 
-        // xml parsing
-        assertTrue(field.setFromString("#ffcc66"));
-        assertEquals(0xffcc66, field.getColor());
-        assertTrue(field.setFromString("#00cc66"));
-        assertEquals(0x00cc66, field.getColor());
-        assertTrue(field.setFromString("#1000cc66"));
-        assertEquals(0x00cc66, field.getColor());
-        assertFalse(field.setFromString("This is not a color"));
-        // Color does not change
-        assertEquals(0x00cc66, field.getColor());
-        assertFalse(field.setFromString("#fc6"));
-        // Color does not change
-        assertEquals(0x00cc66, field.getColor());
+    @Test
+    public void testConstructors() {
+        assertThat(mField.getType()).isEqualTo(Field.TYPE_COLOR);
+        assertThat(mField.getName()).isEqualTo("fname");
+        assertThat(mField.getColor()).isEqualTo(INITIAL_COLOR);
 
-        assertNotSame(field, field.clone());
+        mField = new FieldColor("fname");
+        assertThat(mField.getName()).isEqualTo("fname");
+        assertThat(mField.getColor()).isEqualTo(FieldColor.DEFAULT_COLOR);
+    }
+
+    @Test
+    public void testSetColor() {
+        mField.setColor(0xb0bb1e);
+        assertThat(mField.getColor()).isEqualTo(0xb0bb1e);
+    }
+
+    @Test
+    public void testSetFromString() {
+        assertThat(mField.setFromString("#ffcc66")).isTrue();
+        assertThat(mField.getColor()).isEqualTo(0xffcc66);
+        assertThat(mField.setFromString("#00cc66")).isTrue();
+        assertThat(mField.getColor()).isEqualTo(0x00cc66);
+
+        // Ignore alpha channel
+        assertThat(mField.setFromString("#1000cc66")).isTrue();
+        assertThat(mField.getColor()).isEqualTo(0x00cc66);
+
+        // Invalid color strings. Value should not change.
+        assertThat(mField.setFromString("This is not a color")).isFalse();
+        assertThat(mField.getColor()).isEqualTo(0x00cc66);
+        assertThat(mField.setFromString("#fc6")).isFalse();
+        assertThat(mField.getColor()).isEqualTo(0x00cc66);
+    }
+
+    @Test
+    public void testClone() {
+        FieldColor clone = mField.clone();
+        assertThat(mField).isNotSameAs(clone);
+        assertThat(clone.getName()).isEqualTo(mField.getName());
+        assertThat(clone.getColor()).isEqualTo(mField.getColor());
+    }
+
+    @Test
+    public void testObserverEvents() {
+        FieldTestHelper.testObserverEvent(new FieldColor("normal", INITIAL_COLOR),
+                /* New value */ "#ffcc66",
+                /* Expected old value */ INITIAL_COLOR_STRING,
+                /* Expected new value */ "#ffcc66");
+
+        // No Change
+        FieldTestHelper.testObserverNoEvent(
+                new FieldColor("normal", INITIAL_COLOR),
+                /* New value */ INITIAL_COLOR_STRING);
+        FieldTestHelper.testObserverNoEvent(
+                new FieldColor("normal", INITIAL_COLOR),
+                /* New value */ INITIAL_COLOR_STRING.toUpperCase());
     }
 }

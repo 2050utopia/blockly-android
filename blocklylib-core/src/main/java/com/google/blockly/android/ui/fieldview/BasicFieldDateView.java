@@ -16,22 +16,26 @@
 package com.google.blockly.android.ui.fieldview;
 
 import android.content.Context;
+import android.support.v7.widget.AppCompatTextView;
 import android.text.Editable;
 import android.text.TextWatcher;
 import android.util.AttributeSet;
-import android.widget.TextView;
 
 import com.google.blockly.model.Field;
 import com.google.blockly.model.FieldDate;
 
+import java.text.DateFormat;
+
 /**
  * Renders a date and a date picker as part of a Block.
  */
-public class BasicFieldDateView extends TextView implements FieldView {
-    protected FieldDate.Observer mFieldObserver = new FieldDate.Observer() {
+public class BasicFieldDateView extends AppCompatTextView implements FieldView {
+    private static final DateFormat LOCALIZED_FORMAT = DateFormat.getDateInstance(DateFormat.SHORT);
+
+    protected Field.Observer mFieldObserver = new Field.Observer() {
         @Override
-        public void onDateChanged(Field field, long oldMillis, long newMillis) {
-            String dateStr = mDateField.getDateString();
+        public void onValueChanged(Field field, String oldValue, String newValue) {
+            String dateStr = LOCALIZED_FORMAT.format(mDateField.getDate());
             if (!dateStr.contentEquals(getText())) {
                 setText(dateStr);
             }
@@ -83,7 +87,7 @@ public class BasicFieldDateView extends TextView implements FieldView {
         }
         mDateField = dateField;
         if (mDateField != null) {
-            setText(mDateField.getDateString());
+            setText(mDateField.getLocalizedDateString());
             mDateField.registerObserver(mFieldObserver);
         } else {
             setText("");

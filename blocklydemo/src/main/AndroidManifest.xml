@@ -36,8 +36,64 @@
         </activity>
 
         <activity
+            android:name=".SimpleFragmentHostActivity"
+            android:label="@string/simple_fragment_name"
+            android:taskAffinity="com.google.blockly.SimpleFragmentHostActivity"
+            android:windowSoftInputMode="stateHidden">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name=".LuaActivity"
+            android:label="@string/lua_activity_name"
+            android:taskAffinity="com.google.blockly.LuaActivity"
+            android:windowSoftInputMode="stateHidden">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name=".DartActivity"
+            android:label="@string/dart_activity_name"
+            android:taskAffinity="com.google.blockly.DartActivity"
+            android:windowSoftInputMode="stateHidden">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name=".PHPActivity"
+            android:label="@string/php_activity_name"
+            android:taskAffinity="com.google.blockly.PHPActivity"
+            android:windowSoftInputMode="stateHidden">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name=".PythonActivity"
+            android:label="@string/python_activity_name"
+            android:taskAffinity="com.google.blockly.PythonActivity"
+            android:windowSoftInputMode="stateHidden">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <activity
             android:name=".DevTestsActivity"
             android:label="@string/dev_activity_name"
+            android:theme="@style/StylesDemoTheme"
             android:taskAffinity="com.google.blockly.demo.MainActivity"
             android:windowSoftInputMode="stateHidden|adjustPan">
             <intent-filter>
@@ -77,6 +133,37 @@
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name=".FlyoutDemos"
+            android:label="@string/flyout_activity_name"
+            android:taskAffinity="com.google.blockly.demo.FlyoutDemos"
+            android:windowSoftInputMode="stateHidden|adjustPan">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name=".flyout.AlwaysOpenToolboxActivity"
+            android:label="@string/always_open_toolbox_activity_name"
+            android:taskAffinity="com.google.blockly.demo.FlyoutDemos"
+            android:windowSoftInputMode="stateHidden|adjustPan">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name=".flyout.NoCategoriesToolboxActivity"
+            android:label="@string/no_categories_toolbox_activity_name"
+            android:taskAffinity="com.google.blockly.demo.FlyoutDemos"
+            android:windowSoftInputMode="stateHidden">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
             </intent-filter>
         </activity>
     </application>

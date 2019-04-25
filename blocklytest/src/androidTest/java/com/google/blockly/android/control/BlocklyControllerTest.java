@@ -15,8 +15,10 @@
 
 package com.google.blockly.android.control;
 
-import com.google.blockly.android.MockitoAndroidTestCase;
-import com.google.blockly.android.R;
+import android.content.Context;
+import android.support.test.InstrumentationRegistry;
+
+import com.google.blockly.android.BlocklyTestCase;
 import com.google.blockly.android.testui.TestableBlockGroup;
 import com.google.blockly.android.testui.TestableBlockViewFactory;
 import com.google.blockly.android.ui.AbstractBlockView;
@@ -27,18 +29,33 @@ import com.google.blockly.android.ui.WorkspaceHelper;
 import com.google.blockly.android.ui.WorkspaceView;
 import com.google.blockly.model.Block;
 import com.google.blockly.model.BlockFactory;
+import com.google.blockly.model.BlockTemplate;
 import com.google.blockly.model.BlockTestStrings;
+import com.google.blockly.model.BlocklyEvent;
 import com.google.blockly.model.Connection;
 import com.google.blockly.model.FieldVariable;
+import com.google.blockly.model.VariableInfo;
 import com.google.blockly.model.Workspace;
+import com.google.blockly.utils.BlockLoadingException;
+
+import org.junit.Before;
+import org.junit.Test;
+import org.mockito.AdditionalAnswers;
 
 import java.util.ArrayList;
 import java.util.List;
 
+import static com.google.common.truth.Truth.assertThat;
+import static com.google.common.truth.Truth.assertWithMessage;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.mock;
+
 /**
  * Unit tests for {@link BlocklyController}.
  */
-public class BlocklyControllerTest extends MockitoAndroidTestCase {
+public class BlocklyControllerTest extends BlocklyTestCase {
+    private Context mMockContext;
+
     // Controller under test.
     BlocklyController mController;
     BlockFactory mBlockFactory;
@@ -61,18 +78,23 @@ public class BlocklyControllerTest extends MockitoAndroidTestCase {
         }
     };
 
-    MockVariableCallback mVariableCallback = new MockVariableCallback();
+    StubVariableCallback mVariableCallback = new StubVariableCallback();
 
-    @Override
+    @Before
     public void setUp() throws Exception {
-        super.setUp();
+        configureForThemes();
+        configureForUIThread();
 
-        mHelper = new WorkspaceHelper(getContext());
-        mViewFactory = new TestableBlockViewFactory(getContext(), mHelper);
-        mController = new BlocklyController.Builder(getContext())
+        mMockContext = mock(Context.class, AdditionalAnswers.delegatesTo(getContext()));
+        doReturn(InstrumentationRegistry.getTargetContext().getMainLooper())
+                .when(mMockContext).getMainLooper();
+
+        mHelper = new WorkspaceHelper(mMockContext);
+        mViewFactory = new TestableBlockViewFactory(mMockContext, mHelper);
+        mController = new BlocklyController.Builder(mMockContext)
                 .setWorkspaceHelper(mHelper)
                 .setBlockViewFactory(mViewFactory)
-                .addBlockDefinitions(R.raw.test_blocks)
+                .addBlockDefinitionsFromAsset("default/test_blocks.json")
                 .build();
         mController.addCallback(mCallback);
         mController.setVariableCallback(mVariableCallback);
@@ -83,1184 +105,1591 @@ public class BlocklyControllerTest extends MockitoAndroidTestCase {
         mWorkspaceView = new WorkspaceView(getContext());
     }
 
-    public void testAddRootBlock() {
-        assertTrue(mEventsFired.isEmpty());
+    @Test
+    public void testAddRootBlock() throws BlockLoadingException {
+        assertThat(mEventsFired.isEmpty()).isTrue();
 
-        Block block = mBlockFactory.obtainBlock("simple_input_output", "connectTarget");
-        mController.addRootBlock(block);
+        final Block block = mBlockFactory.obtainBlockFrom(
+                new BlockTemplate().ofType("simple_input_output").withId("connectTarget"));
 
-        assertTrue(mWorkspace.getRootBlocks().contains(block));
-        assertEquals(mEventsFired.size(), 1);
-        assertEquals(mEventsFired.get(0).getTypeId(), BlocklyEvent.TYPE_CREATE);
-        assertEquals(mEventsFired.get(0).getBlockId(), block.getId());
+        runAndSync(new Runnable() {
+            @Override
+            public void run() {
+                mController.addRootBlock(block);
+
+                assertThat(mWorkspace.getRootBlocks().contains(block)).isTrue();
+                assertThat(1).isEqualTo(mEventsFired.size());
+                assertThat(BlocklyEvent.TYPE_CREATE).isEqualTo(mEventsFired.get(0).getTypeId());
+                assertThat(block.getId()).isEqualTo(mEventsFired.get(0).getBlockId());
+            }
+        });
     }
 
-    public void testTrashRootBlock() {
-        Block block = mBlockFactory.obtainBlock("simple_input_output", "connectTarget");
-        mController.addRootBlock(block);
+    @Test
+    public void testTrashRootBlock() throws BlockLoadingException {
+        final Block block = mBlockFactory.obtainBlockFrom(
+                new BlockTemplate().ofType("simple_input_output").withId("connectTarget"));
 
-        mEventsFired.clear();
-        assertTrue(mController.trashRootBlock(block));
+        runAndSync(new Runnable() {
+            @Override
+            public void run() {
+                mController.addRootBlock(block);
 
-        assertTrue(mWorkspace.getRootBlocks().isEmpty());
-        assertEquals(1, mEventsFired.size());
-        assertEquals(BlocklyEvent.TYPE_DELETE, mEventsFired.get(0).getTypeId());
-        assertEquals(block.getId(), mEventsFired.get(0).getBlockId());
+                mEventsFired.clear();
+                assertThat(mController.trashRootBlock(block)).isTrue();
+
+                assertThat(mWorkspace.getRootBlocks().isEmpty()).isTrue();
+                assertThat(mEventsFired.size()).isEqualTo(1);
+                assertThat(mEventsFired.get(0).getTypeId()).isEqualTo(BlocklyEvent.TYPE_DELETE);
+                assertThat(mEventsFired.get(0).getBlockId()).isEqualTo(block.getId());
+                assertThat(block.getEventWorkspaceId()).isEqualTo(BlocklyEvent.WORKSPACE_ID_TRASH);
+            }
+        });
     }
 
-    public void testTrashRootBlockNotDeletable() {
-        Block block = mBlockFactory.obtainBlock("simple_input_output", "connectTarget");
-        block.setDeletable(false);
-        mController.addRootBlock(block);
+    @Test
+    public void testTrashRootBlockNotDeletable() throws BlockLoadingException {
+        final Block block = mBlockFactory.obtainBlockFrom(
+                new BlockTemplate().ofType("simple_input_output").withId("connectTarget"));
 
-        mEventsFired.clear();
-        assertFalse(mController.trashRootBlock(block));
+        runAndSync(new Runnable() {
+            @Override
+            public void run() {
+                block.setDeletable(false);
+                mController.addRootBlock(block);
 
-        assertEquals(1, mWorkspace.getRootBlocks().size());  // Still there!
-        assertEquals(0, mEventsFired.size());
+                mEventsFired.clear();
+                assertThat(mController.trashRootBlock(block)).isFalse();
+
+                assertThat(mWorkspace.getRootBlocks().size()).isEqualTo(1);  // Still there!
+                assertThat(mEventsFired.size()).isEqualTo(0);
+            }
+        });
     }
 
-    public void testTrashRootBlockIgnoringDeletable() {
-        Block block = mBlockFactory.obtainBlock("simple_input_output", "connectTarget");
-        block.setDeletable(false);
-        mController.addRootBlock(block);
+    @Test
+    public void testTrashRootBlockIgnoringDeletable() throws BlockLoadingException {
+        final Block block = mBlockFactory.obtainBlockFrom(
+                new BlockTemplate().ofType("simple_input_output").withId("connectTarget"));
 
-        mEventsFired.clear();
-        assertTrue(mController.trashRootBlockIgnoringDeletable(block));
+        runAndSync(new Runnable() {
+            @Override
+            public void run() {
+                block.setDeletable(false);
+                mController.addRootBlock(block);
 
-        assertTrue(mWorkspace.getRootBlocks().isEmpty());
-        assertEquals(1, mEventsFired.size());
-        assertEquals(BlocklyEvent.TYPE_DELETE, mEventsFired.get(0).getTypeId());
-        assertEquals(block.getId(), mEventsFired.get(0).getBlockId());
+                mEventsFired.clear();
+                assertThat(mController.trashRootBlockIgnoringDeletable(block)).isTrue();
+
+                assertThat(mWorkspace.getRootBlocks().isEmpty()).isTrue();
+                assertThat(mEventsFired.size()).isEqualTo(1);
+                assertThat(mEventsFired.get(0).getTypeId()).isEqualTo(BlocklyEvent.TYPE_DELETE);
+                assertThat(mEventsFired.get(0).getBlockId()).isEqualTo(block.getId());
+            }
+        });
     }
 
-    public void testAddBlockFromTrash() {
-        Block block = mBlockFactory.obtainBlock("simple_input_output", "connectTarget");
-        mController.addRootBlock(block);
-        mController.trashRootBlock(block);
+    @Test
+    public void testAddBlockFromTrash() throws BlockLoadingException {
+        final Block block = mBlockFactory.obtainBlockFrom(
+                new BlockTemplate().ofType("simple_input_output").withId("connectTarget"));
 
-        mEventsFired.clear();
-        mController.addBlockFromTrash(block);
+        runAndSync(new Runnable() {
+            @Override
+            public void run() {
+                mController.addRootBlock(block);
+                mController.trashRootBlock(block);
 
-        assertTrue(mWorkspace.getRootBlocks().contains(block));
-        assertEquals(mEventsFired.size(), 1);
-        assertEquals(mEventsFired.get(0).getTypeId(), BlocklyEvent.TYPE_CREATE);
-        assertEquals(mEventsFired.get(0).getBlockId(), block.getId());
+                mEventsFired.clear();
+                mController.addBlockFromTrash(block);
+
+                assertThat(mWorkspace.getRootBlocks().contains(block)).isTrue();
+                assertThat(1).isEqualTo(mEventsFired.size());
+                assertThat(BlocklyEvent.TYPE_CREATE).isEqualTo(mEventsFired.get(0).getTypeId());
+                assertThat(block.getId()).isEqualTo(mEventsFired.get(0).getBlockId());
+                assertThat(block.getEventWorkspaceId()).isEqualTo(mWorkspace.getId());
+            }
+        });
     }
 
-    public void testConnect_outputToInput_headless() {
+    @Test
+    public void testConnect_outputToInput_headless() throws BlockLoadingException {
         testConnect_outputToInput(false);
     }
 
-    public void testConnect_outputToInput_withViews() {
+    @Test
+    public void testConnect_outputToInput_withViews() throws BlockLoadingException {
         testConnect_outputToInput(true);
     }
 
-    private void testConnect_outputToInput(boolean withViews) {
+    private void testConnect_outputToInput(final boolean withViews) throws BlockLoadingException {
         // Setup
-        Block target = mBlockFactory.obtainBlock("simple_input_output", "connectTarget");
-        Block source = mBlockFactory.obtainBlock("simple_input_output", "connectSource");
-        Connection targetConnection = target.getOnlyValueInput().getConnection();
-        Connection sourceConnection = source.getOutputConnection();
-        mController.addRootBlock(target);
-        mController.addRootBlock(source);
+        final Block target = mBlockFactory.obtainBlockFrom(
+                new BlockTemplate().ofType("simple_input_output").withId("connectTarget"));
+        final Block source = mBlockFactory.obtainBlockFrom(
+                new BlockTemplate().ofType("simple_input_output").withId("connectSource"));
+        final Block shadow = mBlockFactory.obtainBlockFrom(
+                new BlockTemplate().shadow().copyOf(target).withId("connectShadow"));
+        final Connection targetConnection = target.getOnlyValueInput().getConnection();
+        final Connection sourceConnection = source.getOutputConnection();
 
-        Block shadow = new Block.Builder(target).setUuid("connectShadow").setShadow(true).build();
+        runAndSync(new Runnable() {
+            @Override
+            public void run() {
+                mController.addRootBlock(target);
+                mController.addRootBlock(source);
 
-        if (withViews) {
-            mController.initWorkspaceView(mWorkspaceView);
-            fakeOnAttachToWindow(target, source);
+                if (withViews) {
+                    mController.initWorkspaceView(mWorkspaceView);
+                    fakeOnAttachToWindow(target, source);
 
-            // Validate initial view state.
-            BlockView targetView = mHelper.getView(target);
-            BlockView sourceView = mHelper.getView(source);
-            assertNotNull(targetView);
-            assertNotNull(sourceView);
-            assertNotSame(mHelper.getRootBlockGroup(target),
-                    mHelper.getRootBlockGroup(source));
-        }
+                    // Validate initial view state.
+                    BlockView targetView = mHelper.getView(target);
+                    BlockView sourceView = mHelper.getView(source);
+                    assertThat(targetView).isNotNull();
+                    assertThat(sourceView).isNotNull();
+                    assertThat(mHelper.getRootBlockGroup(target))
+                            .isNotSameAs(mHelper.getRootBlockGroup(source));
+                }
 
-        // Perform test: connection source's output to target's input.
-        mController.connect(sourceConnection, targetConnection);
+                // Perform test: connection source's output to target's input.
+                mController.connect(sourceConnection, targetConnection);
 
-        // Validate model changes.
-        assertTrue(mWorkspace.isRootBlock(target));
-        assertFalse(mWorkspace.isRootBlock(source));
-        assertSame(target, sourceConnection.getTargetBlock());
+                // Validate model changes.
+                assertThat(mWorkspace.isRootBlock(target)).isTrue();
+                assertThat(mWorkspace.isRootBlock(source)).isFalse();
+                assertThat(target).isSameAs(sourceConnection.getTargetBlock());
 
-        if (withViews) {
-            // Validate view changes
-            BlockGroup targetGroup = mHelper.getParentBlockGroup(target);
-            assertSame(targetGroup, mHelper.getRootBlockGroup(target));
-            assertSame(targetGroup, mHelper.getRootBlockGroup(source));
-        }
+                if (withViews) {
+                    // Validate view changes
+                    BlockGroup targetGroup = mHelper.getParentBlockGroup(target);
+                    assertThat(targetGroup).isSameAs(mHelper.getRootBlockGroup(target));
+                    assertThat(targetGroup).isSameAs(mHelper.getRootBlockGroup(source));
+                }
 
-        // Add the shadow connection and disconnect the block
-        targetConnection.setShadowConnection(shadow.getOutputConnection());
-        mController.extractBlockAsRoot(source);
-        assertNull(source.getParentBlock());
-        // Validate the block was replaced by the shadow
-        assertEquals(targetConnection.getTargetBlock(), shadow);
+                // Add the shadow connection and disconnect the block
+                targetConnection.setShadowConnection(shadow.getOutputConnection());
+                mController.extractBlockAsRoot(source);
+                assertThat(source.getParentBlock()).isNull();
+                // Validate the block was replaced by the shadow
+                assertThat(shadow).isEqualTo(targetConnection.getTargetBlock());
 
-        if (withViews) {
-            // Check that the shadow block now has views
-            assertNotNull(mHelper.getView(shadow));
-            BlockGroup shadowGroup = mHelper.getParentBlockGroup(target);
-            assertSame(shadowGroup, mHelper.getRootBlockGroup(shadow));
-        }
+                if (withViews) {
+                    // Check that the shadow block now has views
+                    assertThat(mHelper.getView(shadow)).isNotNull();
+                    BlockGroup shadowGroup = mHelper.getParentBlockGroup(target);
+                    assertThat(shadowGroup).isSameAs(mHelper.getRootBlockGroup(shadow));
+                }
 
-        // Reattach the block and verify the shadow is hidden again
-        mController.connect(sourceConnection, targetConnection);
-        assertEquals(targetConnection.getTargetBlock(), source);
-        assertNull(shadow.getOutputConnection().getTargetBlock());
+                // Reattach the block and verify the shadow is hidden again
+                mController.connect(sourceConnection, targetConnection);
+                assertThat(source).isEqualTo(targetConnection.getTargetBlock());
+                assertThat(shadow.getOutputConnection().getTargetBlock()).isNull();
 
-        if (withViews) {
-            assertNull(mHelper.getView(shadow));
-        }
+                if (withViews) {
+                    assertThat(mHelper.getView(shadow)).isNull();
+                }
+            }
+        });
     }
 
-    public void testConnect_outputToInputBumpNoInput_headless() {
+    @Test
+    public void testConnect_outputToInputBumpNoInput_headless() throws BlockLoadingException {
         testConnect_outputToInputBumpNoInput(false);
     }
 
-    public void testConnect_outputToInputBumpNoInput_withViews() {
+    @Test
+    public void testConnect_outputToInputBumpNoInput_withViews() throws BlockLoadingException {
         testConnect_outputToInputBumpNoInput(true);
     }
 
-    private void testConnect_outputToInputBumpNoInput(boolean withViews) {
+    private void testConnect_outputToInputBumpNoInput(final boolean withViews)
+            throws BlockLoadingException {
         // Setup
-        Block target = mBlockFactory.obtainBlock("simple_input_output", "target");
-        Block tail = mBlockFactory.obtainBlock("simple_input_output", "tail");
-        Block source = mBlockFactory.obtainBlock("output_no_input", "source");
+        final Block target = mBlockFactory.obtainBlockFrom(
+                new BlockTemplate().ofType("simple_input_output").withId("target"));
+        final Block tail = mBlockFactory.obtainBlockFrom(
+                new BlockTemplate().ofType("simple_input_output").withId("tail"));
+        final Block source = mBlockFactory.obtainBlockFrom(
+                new BlockTemplate().ofType("output_no_input").withId("source"));
 
-        // Connect the output of tail to the input of target.
-        target.getOnlyValueInput().getConnection().connect(tail.getOutputConnection());
+        runAndSync(new Runnable() {
+            @Override
+            public void run() {
+                // Connect the output of tail to the input of target.
+                target.getOnlyValueInput().getConnection().connect(tail.getOutputConnection());
 
-        mController.addRootBlock(target);
-        mController.addRootBlock(source);
-        if (withViews) {
-            mController.initWorkspaceView(mWorkspaceView);
-            fakeOnAttachToWindow(target, source);
-        }
+                mController.addRootBlock(target);
+                mController.addRootBlock(source);
+                if (withViews) {
+                    mController.initWorkspaceView(mWorkspaceView);
+                    fakeOnAttachToWindow(target, source);
+                }
 
-        // Validate preconditions
-        assertEquals(2, mWorkspace.getRootBlocks().size());
-        assertTrue(mWorkspace.isRootBlock(target));
-        assertFalse(mWorkspace.isRootBlock(tail));
-        assertTrue(mWorkspace.isRootBlock(source));
+                // Validate preconditions
+                assertThat(mWorkspace.getRootBlocks().size()).isEqualTo(2);
+                assertThat(mWorkspace.isRootBlock(target)).isTrue();
+                assertThat(mWorkspace.isRootBlock(tail)).isFalse();
+                assertThat(mWorkspace.isRootBlock(source)).isTrue();
 
-        // Perform test: Connect the source to where the tail is currently attached.
-        mController.connect(
-                source.getOutputConnection(), target.getOnlyValueInput().getConnection());
+                // Perform test: Connect the source to where the tail is currently attached.
+                mController.connect(
+                        source.getOutputConnection(), target.getOnlyValueInput().getConnection());
 
-        // source is now a child of target, and tail is a new root block
-        assertEquals(2, mWorkspace.getRootBlocks().size());
-        assertTrue(mWorkspace.isRootBlock(target));
-        assertFalse(mWorkspace.isRootBlock(source));
-        assertTrue(mWorkspace.isRootBlock(tail));
-        assertSame(target, target.getRootBlock());
-        assertSame(target, source.getRootBlock());
-        assertSame(tail, tail.getRootBlock());
-        assertNull(tail.getOutputConnection().getTargetBlock());
+                // source is now a child of target, and tail is a new root block
+                assertThat(mWorkspace.getRootBlocks().size()).isEqualTo(2);
+                assertThat(mWorkspace.isRootBlock(target)).isTrue();
+                assertThat(mWorkspace.isRootBlock(source)).isFalse();
+                assertThat(mWorkspace.isRootBlock(tail)).isTrue();
+                assertThat(target).isSameAs(target.getRootBlock());
+                assertThat(target).isSameAs(source.getRootBlock());
+                assertThat(tail).isSameAs(tail.getRootBlock());
+                assertThat(tail.getOutputConnection().getTargetBlock()).isNull();
 
-        if (withViews) {
-            BlockGroup targetGroup = mHelper.getParentBlockGroup(target);
-            BlockGroup tailGroup = mHelper.getParentBlockGroup(tail);
-            assertSame(targetGroup, mHelper.getRootBlockGroup(target));
-            assertSame(targetGroup, mHelper.getRootBlockGroup(source));
-            assertSame(tailGroup, mHelper.getRootBlockGroup(tail));
-            assertNotSame(targetGroup, tailGroup);
+                if (withViews) {
+                    BlockGroup targetGroup = mHelper.getParentBlockGroup(target);
+                    BlockGroup tailGroup = mHelper.getParentBlockGroup(tail);
+                    assertThat(targetGroup).isSameAs(mHelper.getRootBlockGroup(target));
+                    assertThat(targetGroup).isSameAs(mHelper.getRootBlockGroup(source));
+                    assertThat(tailGroup).isSameAs(mHelper.getRootBlockGroup(tail));
+                    assertThat(targetGroup).isNotSameAs(tailGroup);
 
-            // Check that tail has been bumped far enough away.
-            assertTrue(mHelper.getMaxSnapDistance() <=
-                    tail.getOutputConnection().distanceFrom(source.getOutputConnection()));
-        }
+                    // Check that tail has been bumped far enough away.
+                    double connectionDist =
+                            tail.getOutputConnection().distanceFrom(source.getOutputConnection());
+                    assertThat(connectionDist).named("bumped connection distance")
+                            .isGreaterThan((double) mHelper.getMaxSnapDistance());
+                }
+            }
+        });
     }
 
-    public void testConnect_outputToInputBumpMultipleInputs_headless() {
+    @Test
+    public void testConnect_outputToInputBumpMultipleInputs_headless()
+            throws BlockLoadingException {
         testConnect_outputToInputBumpMultipleInputs(false);
     }
 
-    public void testConnect_outputToInputBumpMultipleInputs_withViews() {
+    @Test
+    public void testConnect_outputToInputBumpMultipleInputs_withViews()
+            throws BlockLoadingException {
         testConnect_outputToInputBumpMultipleInputs(true);
     }
 
-    private void testConnect_outputToInputBumpMultipleInputs(boolean withViews) {
+    private void testConnect_outputToInputBumpMultipleInputs(final boolean withViews)
+            throws BlockLoadingException {
         // Setup
-        Block target = mBlockFactory.obtainBlock("simple_input_output", "target");
-        Block tail = mBlockFactory.obtainBlock("simple_input_output", "tail");
-        Block source = mBlockFactory.obtainBlock("multiple_input_output", "source");
+        final Block target = mBlockFactory.obtainBlockFrom(
+                new BlockTemplate().ofType("simple_input_output").withId("target"));
+        final Block tail = mBlockFactory.obtainBlockFrom(
+                new BlockTemplate().ofType("simple_input_output").withId("tail"));
+        final Block source = mBlockFactory.obtainBlockFrom(
+                new BlockTemplate().ofType("multiple_input_output").withId("source"));
 
-        // Connect the output of tail to the input of target.
-        tail.getOutputConnection().connect(target.getOnlyValueInput().getConnection());
+        runAndSync(new Runnable() {
+            @Override
+            public void run() {
+                // Connect the output of tail to the input of target.
+                tail.getOutputConnection().connect(target.getOnlyValueInput().getConnection());
 
-        mController.addRootBlock(target);
-        mController.addRootBlock(source);
-        if (withViews) {
-            mController.initWorkspaceView(mWorkspaceView);
-            fakeOnAttachToWindow(target, source);
-        }
+                mController.addRootBlock(target);
+                mController.addRootBlock(source);
+                if (withViews) {
+                    mController.initWorkspaceView(mWorkspaceView);
+                    fakeOnAttachToWindow(target, source);
+                }
 
-        // Perform test: Connect the source to where the tail is currently attached.
-        mController.connect(
-                source.getOutputConnection(), target.getOnlyValueInput().getConnection());
+                // Perform test: Connect the source to where the tail is currently attached.
+                mController.connect(
+                        source.getOutputConnection(), target.getOnlyValueInput().getConnection());
 
-        // Source is now a child of target
-        assertTrue(mWorkspace.isRootBlock(target));
-        assertFalse(mWorkspace.isRootBlock(source));
-        assertSame(target, source.getOutputConnection().getTargetBlock());
-        assertSame(target, source.getRootBlock());
+                // Source is now a child of target
+                assertThat(mWorkspace.isRootBlock(target)).isTrue();
+                assertThat(mWorkspace.isRootBlock(source)).isFalse();
+                assertThat(target).isSameAs(source.getOutputConnection().getTargetBlock());
+                assertThat(target).isSameAs(source.getRootBlock());
 
-        // Tail has been returned to the workspace root, bumped some distance.
-        assertNull(tail.getOutputConnection().getTargetBlock());
-        assertTrue(mWorkspace.isRootBlock(tail));
+                // Tail has been returned to the workspace root, bumped some distance.
+                assertThat(tail.getOutputConnection().getTargetBlock()).isNull();
+                assertThat(mWorkspace.isRootBlock(tail)).isTrue();
 
-        if (withViews) {
-            BlockGroup targetGroup = mHelper.getParentBlockGroup(target);
-            BlockGroup tailGroup = mHelper.getParentBlockGroup(tail);
+                if (withViews) {
+                    BlockGroup targetGroup = mHelper.getParentBlockGroup(target);
+                    BlockGroup tailGroup = mHelper.getParentBlockGroup(tail);
 
-            targetGroup.updateAllConnectorLocations();
-            tailGroup.updateAllConnectorLocations();
+                    targetGroup.updateAllConnectorLocations();
+                    tailGroup.updateAllConnectorLocations();
 
-            assertSame(targetGroup, mHelper.getRootBlockGroup(target));
-            assertSame(targetGroup, mHelper.getRootBlockGroup(source));
-            assertSame(tailGroup, mHelper.getRootBlockGroup(tail));
-            assertNotSame(targetGroup, tailGroup);
-            assertTrue(mHelper.getMaxSnapDistance() <=
-                    source.getOutputConnection().distanceFrom(tail.getOutputConnection()));
-        }
+                    assertThat(targetGroup).isSameAs(mHelper.getRootBlockGroup(target));
+                    assertThat(targetGroup).isSameAs(mHelper.getRootBlockGroup(source));
+                    assertThat(tailGroup).isSameAs(mHelper.getRootBlockGroup(tail));
+                    assertThat(targetGroup).isNotSameAs(tailGroup);
+
+                    double connectionDist =
+                            source.getOutputConnection().distanceFrom(tail.getOutputConnection());
+                    assertThat(connectionDist).named("bumped connection distance")
+                            .isGreaterThan((double) mHelper.getMaxSnapDistance());
+                }
+            }
+        });
     }
 
-    public void testConnect_outputToInputShadowSplice_headless() {
+    @Test
+    public void testConnect_outputToInputShadowSplice_headless()
+            throws BlockLoadingException {
         testConnect_outputToInputShadowSplice(false);
     }
 
-    public void testConnect_outputToInputShadowSplice_withViews() {
+    @Test
+    public void testConnect_outputToInputShadowSplice_withViews()
+            throws BlockLoadingException {
         testConnect_outputToInputShadowSplice(true);
     }
 
-    private void testConnect_outputToInputShadowSplice(boolean withViews) {
+    private void testConnect_outputToInputShadowSplice(final boolean withViews)
+            throws BlockLoadingException {
         // Setup
-        Block target = mBlockFactory.obtainBlock("simple_input_output", "target");
-        Block tail = mBlockFactory.obtainBlock("simple_input_output", "tail");
-        Block source = mBlockFactory.obtainBlock("simple_input_output", "source");
-        Block shadow = new Block.Builder(source).setShadow(true).setUuid("shadow").build();
-        Connection sourceInputConnection = source.getOnlyValueInput().getConnection();
+        final Block target = mBlockFactory.obtainBlockFrom(
+                new BlockTemplate().ofType("simple_input_output").withId("target"));
+        final Block tail = mBlockFactory.obtainBlockFrom(
+                new BlockTemplate().ofType("simple_input_output").withId("tail"));
+        final Block source = mBlockFactory.obtainBlockFrom(
+                new BlockTemplate().ofType("simple_input_output").withId("source"));
+        final Block shadow = mBlockFactory.obtainBlockFrom(
+                new BlockTemplate().shadow().copyOf(source).withId("shadow"));
+        final Connection sourceInputConnection = source.getOnlyValueInput().getConnection();
 
-        // Connect the output of tail to the input of target.
-        target.getOnlyValueInput().getConnection().connect(tail.getOutputConnection());
-        // Add the shadow to the source
-        sourceInputConnection.setShadowConnection(shadow.getOutputConnection());
-        sourceInputConnection.connect(shadow.getOutputConnection());
+        runAndSync(new Runnable() {
+            @Override
+            public void run() {
+                // Connect the output of tail to the input of target.
+                target.getOnlyValueInput().getConnection().connect(tail.getOutputConnection());
+                // Add the shadow to the source
+                sourceInputConnection.setShadowConnection(shadow.getOutputConnection());
+                sourceInputConnection.connect(shadow.getOutputConnection());
 
-        mController.addRootBlock(target);
-        mController.addRootBlock(source);
-        if (withViews) {
-            mController.initWorkspaceView(mWorkspaceView);
-            fakeOnAttachToWindow(target, source);
-        }
+                mController.addRootBlock(target);
+                mController.addRootBlock(source);
+                if (withViews) {
+                    mController.initWorkspaceView(mWorkspaceView);
+                    fakeOnAttachToWindow(target, source);
+                }
 
-        // Validate preconditions
-        assertEquals(2, mWorkspace.getRootBlocks().size());
-        assertTrue(mWorkspace.isRootBlock(target));
-        assertFalse(mWorkspace.isRootBlock(tail));
-        assertTrue(mWorkspace.isRootBlock(source));
+                // Validate preconditions
+                assertThat(mWorkspace.getRootBlocks().size()).isEqualTo(2);
+                assertThat(mWorkspace.isRootBlock(target)).isTrue();
+                assertThat(mWorkspace.isRootBlock(tail)).isFalse();
+                assertThat(mWorkspace.isRootBlock(source)).isTrue();
 
-        // Perform test: Connect the source to where the tail is currently attached.
-        mController.connect(
-                source.getOutputConnection(), target.getOnlyValueInput().getConnection());
+                // Perform test: Connect the source to where the tail is currently attached.
+                mController.connect(
+                        source.getOutputConnection(), target.getOnlyValueInput().getConnection());
 
-        // source is now a child of target, and tail replaced the shadow
-        assertEquals(1, mWorkspace.getRootBlocks().size());
-        assertTrue(mWorkspace.isRootBlock(target));
-        assertFalse(mWorkspace.isRootBlock(source));
-        assertFalse(mWorkspace.isRootBlock(tail));
-        assertSame(target, target.getRootBlock());
-        assertSame(target, source.getRootBlock());
-        assertSame(target, tail.getRootBlock());
-        assertSame(source, tail.getParentBlock());
+                // source is now a child of target, and tail replaced the shadow
+                assertThat(mWorkspace.getRootBlocks().size()).isEqualTo(1);
+                assertThat(mWorkspace.isRootBlock(target)).isTrue();
+                assertThat(mWorkspace.isRootBlock(source)).isFalse();
+                assertThat(mWorkspace.isRootBlock(tail)).isFalse();
+                assertThat(target).isSameAs(target.getRootBlock());
+                assertThat(target).isSameAs(source.getRootBlock());
+                assertThat(target).isSameAs(tail.getRootBlock());
+                assertThat(source).isSameAs(tail.getParentBlock());
 
-        if (withViews) {
-            BlockGroup targetGroup = mHelper.getParentBlockGroup(target);
-            assertSame(targetGroup, mHelper.getRootBlockGroup(target));
-            assertSame(targetGroup, mHelper.getRootBlockGroup(source));
-            assertSame(targetGroup, mHelper.getRootBlockGroup(tail));
-            assertNull(mHelper.getView(shadow));
-        }
+                if (withViews) {
+                    BlockGroup targetGroup = mHelper.getParentBlockGroup(target);
+                    assertThat(targetGroup).isSameAs(mHelper.getRootBlockGroup(target));
+                    assertThat(targetGroup).isSameAs(mHelper.getRootBlockGroup(source));
+                    assertThat(targetGroup).isSameAs(mHelper.getRootBlockGroup(tail));
+                    assertThat(mHelper.getView(shadow)).isNull();
+                }
+            }
+        });
     }
 
-    public void testConnect_outputToInputSplice_headless() {
+    @Test
+    public void testConnect_outputToInputSplice_headless() throws BlockLoadingException {
         testConnect_outputToInputSplice(false);
     }
 
-    public void testConnect_outputToInputSplice_withViews() {
+    @Test
+    public void testConnect_outputToInputSplice_withViews() throws BlockLoadingException {
         testConnect_outputToInputSplice(true);
     }
 
-    private void testConnect_outputToInputSplice(boolean withViews) {
+    private void testConnect_outputToInputSplice(final boolean withViews)
+            throws BlockLoadingException {
         // Setup
-        Block target = mBlockFactory.obtainBlock("simple_input_output", "target");
-        Block tail = mBlockFactory.obtainBlock("multiple_input_output", "tail");
-        Block source = mBlockFactory.obtainBlock("simple_input_output", "source");
-        Block shadow = new Block.Builder(tail).setShadow(true).setUuid("shadow").build();
+        final Block target = mBlockFactory.obtainBlockFrom(
+                new BlockTemplate().ofType("simple_input_output").withId("target"));
+        final Block tail = mBlockFactory.obtainBlockFrom(
+                new BlockTemplate().ofType("multiple_input_output").withId("tail"));
+        final Block source = mBlockFactory.obtainBlockFrom(
+                new BlockTemplate().ofType("simple_input_output").withId("source"));
+        final Block shadow = mBlockFactory.obtainBlockFrom(
+                new BlockTemplate().shadow().copyOf(tail).withId("shadow"));
 
-        // Add a hidden shadow to the target to ensure it has no effect.
-        target.getOnlyValueInput().getConnection()
-                .setShadowConnection(shadow.getOutputConnection());
+        runAndSync(new Runnable() {
+            @Override
+            public void run() {
+                // Add a hidden shadow to the target to ensure it has no effect.
+                target.getOnlyValueInput().getConnection()
+                        .setShadowConnection(shadow.getOutputConnection());
 
-        // Connect the output of tail to the input of source.
-        tail.getOutputConnection().connect(target.getOnlyValueInput().getConnection());
+                // Connect the output of tail to the input of source.
+                tail.getOutputConnection().connect(target.getOnlyValueInput().getConnection());
 
-        mController.addRootBlock(target);
-        mController.addRootBlock(source);
-        if (withViews) {
-            mController.initWorkspaceView(mWorkspaceView);
-            fakeOnAttachToWindow(target, source);
-        }
+                mController.addRootBlock(target);
+                mController.addRootBlock(source);
+                if (withViews) {
+                    mController.initWorkspaceView(mWorkspaceView);
+                    fakeOnAttachToWindow(target, source);
+                }
 
-        // Splice third between second and first.
-        mController.connect(
-                source.getOutputConnection(), target.getOnlyValueInput().getConnection());
+                // Splice third between second and first.
+                mController.connect(
+                        source.getOutputConnection(), target.getOnlyValueInput().getConnection());
 
-        // Validate
-        assertTrue(mWorkspace.isRootBlock(target));
-        assertFalse(mWorkspace.isRootBlock(tail));
-        assertFalse(mWorkspace.isRootBlock(source));
-        assertSame(target, source.getOutputConnection().getTargetBlock());
-        assertSame(source, tail.getOutputConnection().getTargetBlock());
+                // Validate
+                assertThat(mWorkspace.isRootBlock(target)).isTrue();
+                assertThat(mWorkspace.isRootBlock(tail)).isFalse();
+                assertThat(mWorkspace.isRootBlock(source)).isFalse();
+                assertThat(target).isSameAs(source.getOutputConnection().getTargetBlock());
+                assertThat(source).isSameAs(tail.getOutputConnection().getTargetBlock());
 
-        if (withViews) {
-            BlockGroup targetGroup = mHelper.getParentBlockGroup(target);
-            assertSame(targetGroup, mHelper.getRootBlockGroup(target));
-            assertSame(targetGroup, mHelper.getRootBlockGroup(tail));
-            assertSame(targetGroup, mHelper.getRootBlockGroup(source));
-        }
+                if (withViews) {
+                    BlockGroup targetGroup = mHelper.getParentBlockGroup(target);
+                    assertThat(targetGroup).isSameAs(mHelper.getRootBlockGroup(target));
+                    assertThat(targetGroup).isSameAs(mHelper.getRootBlockGroup(tail));
+                    assertThat(targetGroup).isSameAs(mHelper.getRootBlockGroup(source));
+                }
+            }
+        });
     }
 
-    public void testConnect_previousToNext_headless() {
+    @Test
+    public void testConnect_previousToNext_headless() throws BlockLoadingException {
         testConnect_previousToNext(false);
     }
 
-    public void testConnect_previousToNext_withViews() {
+    @Test
+    public void testConnect_previousToNext_withViews() throws BlockLoadingException {
         testConnect_previousToNext(true);
     }
 
-    private void testConnect_previousToNext(boolean withViews) {
+    private void testConnect_previousToNext(final boolean withViews) throws BlockLoadingException {
         // setup
-        Block target = mBlockFactory.obtainBlock("statement_no_input", "target");
-        Block source = mBlockFactory.obtainBlock("statement_no_input", "source");
-        Block shadow = new Block.Builder(target).setUuid("connectShadow").setShadow(true).build();
-        BlockView targetView = null, sourceView = null;
+        final Block target = mBlockFactory.obtainBlockFrom(
+                new BlockTemplate().ofType("statement_no_input").withId("target"));
+        final Block source = mBlockFactory.obtainBlockFrom(
+                new BlockTemplate().ofType("statement_no_input").withId("source"));
+        final Block shadow = mBlockFactory.obtainBlockFrom(
+                new BlockTemplate().shadow().copyOf(target).withId("connectShadow"));
 
-        mController.addRootBlock(target);
-        mController.addRootBlock(source);
-        if (withViews) {
-            mController.initWorkspaceView(mWorkspaceView);
-            fakeOnAttachToWindow(target, source);
+        runAndSync(new Runnable() {
+            @Override
+            public void run() {
+                BlockView targetView = null, sourceView = null;
 
-            targetView = mHelper.getView(target);
-            sourceView = mHelper.getView(source);
+                mController.addRootBlock(target);
+                mController.addRootBlock(source);
+                if (withViews) {
+                    mController.initWorkspaceView(mWorkspaceView);
+                    fakeOnAttachToWindow(target, source);
 
-            assertNotNull(targetView);
-            assertNotNull(sourceView);
-        }
+                    targetView = mHelper.getView(target);
+                    sourceView = mHelper.getView(source);
 
-        // Connect source after target. No prior connection to bump or splice.
-        mController.connect(source.getPreviousConnection(), target.getNextConnection());
+                    assertThat(targetView).isNotNull();
+                    assertThat(sourceView).isNotNull();
+                }
 
-        // Validate
-        assertTrue(mWorkspace.isRootBlock(target));
-        assertFalse(mWorkspace.isRootBlock(source));
-        assertSame(target, source.getPreviousBlock());
+                // Connect source after target. No prior connection to bump or splice.
+                mController.connect(source.getPreviousConnection(), target.getNextConnection());
 
-        if (withViews) {
-            BlockGroup rootGroup = mHelper.getRootBlockGroup(target);
-            assertSame(rootGroup, mHelper.getParentBlockGroup(target));
-            assertSame(rootGroup, mHelper.getParentBlockGroup(source));
-            assertSame(targetView, rootGroup.getChildAt(0));
-            assertSame(sourceView, rootGroup.getChildAt(1));
-        }
+                // Validate
+                assertThat(mWorkspace.isRootBlock(target)).isTrue();
+                assertThat(mWorkspace.isRootBlock(source)).isFalse();
+                assertThat(target).isSameAs(source.getPreviousBlock());
 
-        // Add the shadow to the target's next connection so the view will be created.
-        target.getNextConnection().setShadowConnection(shadow.getPreviousConnection());
-        mController.extractBlockAsRoot(source);
+                if (withViews) {
+                    BlockGroup rootGroup = mHelper.getRootBlockGroup(target);
+                    assertThat(rootGroup).isSameAs(mHelper.getParentBlockGroup(target));
+                    assertThat(rootGroup).isSameAs(mHelper.getParentBlockGroup(source));
+                    assertThat(targetView).isSameAs(rootGroup.getChildAt(0));
+                    assertThat(sourceView).isSameAs(rootGroup.getChildAt(1));
+                }
 
-        assertTrue(mWorkspace.isRootBlock(source));
-        assertSame(target.getNextBlock(), shadow);
+                // Add the shadow to the target's next connection so the view will be created.
+                target.getNextConnection().setShadowConnection(shadow.getPreviousConnection());
+                mController.extractBlockAsRoot(source);
 
-        if (withViews) {
-            BlockGroup rootGroup = mHelper.getRootBlockGroup(target);
-            assertSame(rootGroup, mHelper.getParentBlockGroup(shadow));
-            assertNotSame(rootGroup, mHelper.getParentBlockGroup(source));
-            assertSame(mHelper.getView(shadow), rootGroup.getChildAt(1));
-        }
+                assertThat(mWorkspace.isRootBlock(source)).isTrue();
+                assertThat(target.getNextBlock()).isSameAs(shadow);
 
-        // Reattach the source and verify the shadow went away.
-        mController.connect(source.getPreviousConnection(), target.getNextConnection());
-        assertFalse(mWorkspace.isRootBlock(source));
-        assertSame(target.getNextBlock(), source);
-        assertNull(shadow.getPreviousBlock());
+                if (withViews) {
+                    BlockGroup rootGroup = mHelper.getRootBlockGroup(target);
+                    assertThat(rootGroup).isSameAs(mHelper.getParentBlockGroup(shadow));
+                    assertThat(rootGroup).isNotSameAs(mHelper.getParentBlockGroup(source));
+                    assertThat(mHelper.getView(shadow)).isSameAs(rootGroup.getChildAt(1));
+                }
 
-        if (withViews) {
-            assertNull(mHelper.getView(shadow));
-        }
+                // Reattach the source and verify the shadow went away.
+                mController.connect(source.getPreviousConnection(), target.getNextConnection());
+                assertThat(mWorkspace.isRootBlock(source)).isFalse();
+                assertThat(target.getNextBlock()).isSameAs(source);
+                assertThat(shadow.getPreviousBlock()).isNull();
+
+                if (withViews) {
+                    assertThat(mHelper.getView(shadow)).isNull();
+                }
+            }
+        });
     }
 
-    public void testConnect_previousToNextSplice_headless() {
+    @Test
+    public void testConnect_previousToNextSplice_headless() throws BlockLoadingException {
         testConnect_previousToNextSplice(false);
     }
 
-    public void testConnect_previousToNextSplice_withViews() {
+    @Test
+    public void testConnect_previousToNextSplice_withViews() throws BlockLoadingException {
         testConnect_previousToNextSplice(true);
     }
 
-    private void testConnect_previousToNextSplice(boolean withViews) {
+    private void testConnect_previousToNextSplice(final boolean withViews) throws BlockLoadingException {
         // setup
-        Block target = mBlockFactory.obtainBlock("statement_no_input", "target");
-        Block tail = mBlockFactory.obtainBlock("statement_no_input", "tail");
-        Block source = mBlockFactory.obtainBlock("statement_no_input", "source");
-        Block shadow = new Block.Builder("tail").setShadow(true).setUuid("shadow").build();
-        BlockView targetView = null, tailView = null, sourceView = null;
+        final Block target = mBlockFactory.obtainBlockFrom(
+                new BlockTemplate().ofType("statement_no_input").withId("target"));
+        final Block tail = mBlockFactory.obtainBlockFrom(
+                new BlockTemplate().ofType("statement_no_input").withId("tail"));
+        final Block source = mBlockFactory.obtainBlockFrom(
+                new BlockTemplate().ofType("statement_no_input").withId("source"));
+        final Block shadow = mBlockFactory.obtainBlockFrom(
+                new BlockTemplate().shadow().ofType("statement_no_input").withId("shadowTail"));
 
-        // Add a shadow to make sure it doesn't have any effects.
-        target.getNextConnection().setShadowConnection(shadow.getPreviousConnection());
-        tail.getPreviousConnection().connect(target.getNextConnection());
+        runAndSync(new Runnable() {
+            @Override
+            public void run() {
+                BlockView targetView = null, tailView = null, sourceView = null;
 
-        mController.addRootBlock(target);
-        mController.addRootBlock(source);
-        if (withViews) {
-            mController.initWorkspaceView(mWorkspaceView);
-            fakeOnAttachToWindow(target, source);
+                // Add a shadow to make sure it doesn't have any effects.
+                Connection targetNext = target.getNextConnection();
+                targetNext.setShadowConnection(shadow.getPreviousConnection());
+                tail.getPreviousConnection().connect(targetNext);
 
-            targetView = mHelper.getView(target);
-            tailView = mHelper.getView(tail);
-            sourceView = mHelper.getView(source);
+                mController.addRootBlock(target);
+                mController.addRootBlock(source);
+                if (withViews) {
+                    mController.initWorkspaceView(mWorkspaceView);
+                    fakeOnAttachToWindow(target, source);
 
-            assertNotNull(targetView);
-            assertNotNull(tailView);
-            assertNotNull(sourceView);
-        }
+                    targetView = mHelper.getView(target);
+                    tailView = mHelper.getView(tail);
+                    sourceView = mHelper.getView(source);
 
-        // Connect source after target, where tail is currently attached, causing a splice.
-        mController.connect(source.getPreviousConnection(), target.getNextConnection());
+                    assertThat(targetView).isNotNull();
+                    assertThat(tailView).isNotNull();
+                    assertThat(sourceView).isNotNull();
+                }
 
-        assertSame(target, source.getPreviousBlock());
-        assertSame(source, tail.getPreviousBlock());
+                // Connect source after target, where tail is currently attached, causing a splice.
+                mController.connect(source.getPreviousConnection(), target.getNextConnection());
 
-        if (withViews) {
-            BlockGroup rootGroup = mHelper.getRootBlockGroup(target);
-            assertSame(rootGroup, mHelper.getParentBlockGroup(target));
-            assertSame(rootGroup, mHelper.getParentBlockGroup(tail));
-            assertSame(rootGroup, mHelper.getParentBlockGroup(source));
-            assertSame(targetView, rootGroup.getChildAt(0));
-            assertSame(sourceView, rootGroup.getChildAt(1));  // Spliced in between.
-            assertSame(tailView, rootGroup.getChildAt(2));
-        }
+                assertThat(target).isSameAs(source.getPreviousBlock());
+                assertThat(source).isSameAs(tail.getPreviousBlock());
+
+                if (withViews) {
+                    BlockGroup rootGroup = mHelper.getRootBlockGroup(target);
+                    assertThat(rootGroup).isSameAs(mHelper.getParentBlockGroup(target));
+                    assertThat(rootGroup).isSameAs(mHelper.getParentBlockGroup(tail));
+                    assertThat(rootGroup).isSameAs(mHelper.getParentBlockGroup(source));
+                    assertThat(targetView).isSameAs(rootGroup.getChildAt(0));
+                    assertThat(sourceView).isSameAs(rootGroup.getChildAt(1));  // Spliced in between.
+                    assertThat(tailView).isSameAs(rootGroup.getChildAt(2));
+                }
+            }
+        });
     }
 
-    public void testConnect_previousToNextBumpRemainder_headless() {
+    @Test
+    public void testConnect_previousToNextBumpRemainder_headless() throws BlockLoadingException {
         testConnect_previousToNextBumpRemainder(false);
     }
 
-    public void testConnect_previousToNextBumpRemainder_withViews() {
+    @Test
+    public void testConnect_previousToNextBumpRemainder_withViews() throws BlockLoadingException {
         testConnect_previousToNextBumpRemainder(true);
     }
 
-    private void testConnect_previousToNextBumpRemainder(boolean withViews) {
+    private void testConnect_previousToNextBumpRemainder(final boolean withViews)
+            throws BlockLoadingException {
         // setup
-        Block target = mBlockFactory.obtainBlock("statement_no_input", "target");
-        Block tail1 = mBlockFactory.obtainBlock("statement_no_input", "tail1");
-        Block tail2 = mBlockFactory.obtainBlock("statement_no_input", "tail2");
-        Block source = mBlockFactory.obtainBlock("statement_no_next", "source");
-        BlockView targetView = null, tailView1 = null, tailView2 = null, sourceView = null;
+        final Block target = mBlockFactory.obtainBlockFrom(
+                new BlockTemplate().ofType("statement_no_input").withId("target"));
+        final Block tail1 = mBlockFactory.obtainBlockFrom(
+                new BlockTemplate().ofType("statement_no_input").withId("tail1"));
+        final Block tail2 = mBlockFactory.obtainBlockFrom(
+                new BlockTemplate().ofType("statement_no_input").withId("tail2"));
+        final Block source = mBlockFactory.obtainBlockFrom(
+                new BlockTemplate().ofType("statement_no_next").withId("source"));
 
-        // Create a sequence of target, tail1, and tail2.
-        tail1.getPreviousConnection().connect(target.getNextConnection());
-        tail2.getPreviousConnection().connect(tail1.getNextConnection());
+        runAndSync(new Runnable() {
+            @Override
+            public void run() {
+                BlockView targetView = null, tailView1 = null, tailView2 = null, sourceView = null;
 
-        mController.addRootBlock(target);
-        mController.addRootBlock(source);
-        if (withViews) {
-            mController.initWorkspaceView(mWorkspaceView);
-            fakeOnAttachToWindow(target, source);
+                // Create a sequence of target, tail1, and tail2.
+                tail1.getPreviousConnection().connect(target.getNextConnection());
+                tail2.getPreviousConnection().connect(tail1.getNextConnection());
 
-            targetView = mHelper.getView(target);
-            tailView1 = mHelper.getView(tail1);
-            tailView2 = mHelper.getView(tail2);
-            sourceView = mHelper.getView(source);
+                mController.addRootBlock(target);
+                mController.addRootBlock(source);
+                if (withViews) {
+                    mController.initWorkspaceView(mWorkspaceView);
+                    fakeOnAttachToWindow(target, source);
 
-            assertNotNull(targetView);
-            assertNotNull(tailView1);
-            assertNotNull(tailView2);
-            assertNotNull(sourceView);
-        }
+                    targetView = mHelper.getView(target);
+                    tailView1 = mHelper.getView(tail1);
+                    tailView2 = mHelper.getView(tail2);
+                    sourceView = mHelper.getView(source);
 
-        // Run test: Connect source after target, where tail is currently attached.
-        // Since source does not have a next connection, bump the tail.
-        mController.connect(source.getPreviousConnection(), target.getNextConnection());
+                    assertThat(targetView).isNotNull();
+                    assertThat(tailView1).isNotNull();
+                    assertThat(tailView2).isNotNull();
+                    assertThat(sourceView).isNotNull();
+                }
 
-        // Target and source are connected.
-        assertTrue(mWorkspace.isRootBlock(target));
-        assertSame(target, source.getPreviousBlock());
+                // Run test: Connect source after target, where tail is currently attached.
+                // Since source does not have a next connection, bump the tail.
+                mController.connect(source.getPreviousConnection(), target.getNextConnection());
 
-        // Tail has been returned to the workspace root.
-        assertTrue(mWorkspace.isRootBlock(tail1));
-        assertNull(tail1.getPreviousBlock());
-        assertFalse(mWorkspace.isRootBlock(tail2));
-        assertFalse(mWorkspace.isRootBlock(source));
-        assertSame(tail1, tail1.getRootBlock());
-        assertSame(tail1, tail2.getRootBlock());
+                // Target and source are connected.
+                assertThat(mWorkspace.isRootBlock(target)).isTrue();
+                assertThat(target).isSameAs(source.getPreviousBlock());
 
-        if (withViews) {
-            BlockGroup targetRootGroup = mHelper.getRootBlockGroup(target);
-            BlockGroup tailRootGroup = mHelper.getRootBlockGroup(tail1);
-            assertSame(targetRootGroup, mHelper.getParentBlockGroup(target));
-            assertSame(targetRootGroup, mHelper.getRootBlockGroup(source));
-            assertNotSame(targetRootGroup, tailRootGroup);
-            assertSame(tailRootGroup, mHelper.getRootBlockGroup(tail2));
-            assertSame(targetView, targetRootGroup.getChildAt(0));
-            assertSame(sourceView, targetRootGroup.getChildAt(1));
-            assertSame(tailView1, tailRootGroup.getChildAt(0));
-            assertSame(tailView2, tailRootGroup.getChildAt(1));
+                // Tail has been returned to the workspace root.
+                assertThat(mWorkspace.isRootBlock(tail1)).isTrue();
+                assertThat(tail1.getPreviousBlock()).isNull();
+                assertThat(mWorkspace.isRootBlock(tail2)).isFalse();
+                assertThat(mWorkspace.isRootBlock(source)).isFalse();
+                assertThat(tail1).isSameAs(tail1.getRootBlock());
+                assertThat(tail1).isSameAs(tail2.getRootBlock());
 
-            // Check that tail has been bumped far enough away.
-            assertTrue(mHelper.getMaxSnapDistance() <=
-                    tail1.getPreviousConnection().distanceFrom(target.getNextConnection()));
-        }
+                if (withViews) {
+                    BlockGroup targetRootGroup = mHelper.getRootBlockGroup(target);
+                    BlockGroup tailRootGroup = mHelper.getRootBlockGroup(tail1);
+                    assertThat(targetRootGroup).isSameAs(mHelper.getParentBlockGroup(target));
+                    assertThat(targetRootGroup).isSameAs(mHelper.getRootBlockGroup(source));
+                    assertThat(targetRootGroup).isNotSameAs(tailRootGroup);
+                    assertThat(tailRootGroup).isSameAs(mHelper.getRootBlockGroup(tail2));
+                    assertThat(targetView).isSameAs(targetRootGroup.getChildAt(0));
+                    assertThat(sourceView).isSameAs(targetRootGroup.getChildAt(1));
+                    assertThat(tailView1).isSameAs(tailRootGroup.getChildAt(0));
+                    assertThat(tailView2).isSameAs(tailRootGroup.getChildAt(1));
+
+                    // Check that tail has been bumped far enough away.
+                    double connectionDistance =
+                            tail1.getPreviousConnection().distanceFrom(target.getNextConnection());
+                    assertThat(connectionDistance).named("bumped connection distance")
+                            .isGreaterThan((double) mHelper.getMaxSnapDistance());
+                }
+            }
+        });
     }
 
 
-    public void testConnect_previousToNextShadowSplice_headless() {
+    @Test
+    public void testConnect_previousToNextShadowSplice_headless() throws BlockLoadingException {
         testConnect_previousToNextShadowSplice(false);
     }
 
-    public void testConnect_previousToNextShadowSplice_withViews() {
+    @Test
+    public void testConnect_previousToNextShadowSplice_withViews() throws BlockLoadingException {
         testConnect_previousToNextShadowSplice(true);
     }
 
-    private void testConnect_previousToNextShadowSplice(boolean withViews) {
+    private void testConnect_previousToNextShadowSplice(final boolean withViews)
+            throws BlockLoadingException {
         // setup
-        Block target = mBlockFactory.obtainBlock("statement_no_input", "target");
-        Block tail1 = mBlockFactory.obtainBlock("statement_no_input", "tail1");
-        Block tail2 = mBlockFactory.obtainBlock("statement_no_input", "tail2");
-        Block source = mBlockFactory.obtainBlock("statement_no_input", "source");
-        Block shadowTail = new Block.Builder(tail1).setShadow(true).setUuid("shadowTail").build();
-        BlockView targetView = null, tailView1 = null, tailView2 = null, sourceView = null;
+        final Block target = mBlockFactory.obtainBlockFrom(
+                new BlockTemplate().ofType("statement_no_input").withId("target"));
+        final Block tail1 = mBlockFactory.obtainBlockFrom(
+                new BlockTemplate().ofType("statement_no_input").withId("tail1"));
+        final Block tail2 = mBlockFactory.obtainBlockFrom(
+                new BlockTemplate().ofType("statement_no_input").withId("tail2"));
+        final Block source = mBlockFactory.obtainBlockFrom(
+                new BlockTemplate().ofType("statement_no_input").withId("source"));
+        final Block shadowTail = mBlockFactory.obtainBlockFrom(
+                new BlockTemplate().shadow().copyOf(tail1).withId("shadowTail"));
 
-        // Create a sequence of target, tail1, and tail2.
-        tail1.getPreviousConnection().connect(target.getNextConnection());
-        tail2.getPreviousConnection().connect(tail1.getNextConnection());
-        source.getNextConnection().setShadowConnection(shadowTail.getPreviousConnection());
-        source.getNextConnection().connect(shadowTail.getPreviousConnection());
+        runAndSync(new Runnable() {
+            @Override
+            public void run() {
+                BlockView targetView = null, tailView1 = null, tailView2 = null, sourceView = null;
 
-        mController.addRootBlock(target);
-        mController.addRootBlock(source);
-        if (withViews) {
-            mController.initWorkspaceView(mWorkspaceView);
-            fakeOnAttachToWindow(target, source);
+                // Create a sequence of target, tail1, and tail2.
+                tail1.getPreviousConnection().connect(target.getNextConnection());
+                tail2.getPreviousConnection().connect(tail1.getNextConnection());
+                source.getNextConnection().setShadowConnection(shadowTail.getPreviousConnection());
+                source.getNextConnection().connect(shadowTail.getPreviousConnection());
 
-            targetView = mHelper.getView(target);
-            tailView1 = mHelper.getView(tail1);
-            tailView2 = mHelper.getView(tail2);
-            sourceView = mHelper.getView(source);
+                mController.addRootBlock(target);
+                mController.addRootBlock(source);
+                if (withViews) {
+                    mController.initWorkspaceView(mWorkspaceView);
+                    fakeOnAttachToWindow(target, source);
 
-            assertNotNull(targetView);
-            assertNotNull(tailView1);
-            assertNotNull(tailView2);
-            assertNotNull(sourceView);
-            assertNotNull(mHelper.getView(shadowTail));
-        }
+                    targetView = mHelper.getView(target);
+                    tailView1 = mHelper.getView(tail1);
+                    tailView2 = mHelper.getView(tail2);
+                    sourceView = mHelper.getView(source);
 
-        // Run test: Connect source after target, where tail is currently attached.
-        // Since source has a shadow connected to next, tail should replace it.
-        mController.connect(source.getPreviousConnection(), target.getNextConnection());
+                    assertThat(targetView).isNotNull();
+                    assertThat(tailView1).isNotNull();
+                    assertThat(tailView2).isNotNull();
+                    assertThat(sourceView).isNotNull();
+                    assertThat(mHelper.getView(shadowTail)).isNotNull();
+                }
 
-        // Target and source are connected.
-        assertTrue(mWorkspace.isRootBlock(target));
-        assertSame(target, source.getPreviousBlock());
+                // Run test: Connect source after target, where tail is currently attached.
+                // Since source has a shadow connected to next, tail should replace it.
+                mController.connect(source.getPreviousConnection(), target.getNextConnection());
 
-        // Tail has replaced the shadow.
-        assertFalse(mWorkspace.isRootBlock(tail1));
-        assertNull(shadowTail.getPreviousBlock());
-        assertSame(source, tail1.getParentBlock());
-        assertFalse(mWorkspace.isRootBlock(tail2));
-        assertFalse(mWorkspace.isRootBlock(source));
-        assertSame(target, tail1.getRootBlock());
-        assertSame(target, tail2.getRootBlock());
+                // Target and source are connected.
+                assertThat(mWorkspace.isRootBlock(target)).isTrue();
+                assertThat(target).isSameAs(source.getPreviousBlock());
 
-        if (withViews) {
-            BlockGroup targetRootGroup = mHelper.getRootBlockGroup(target);
-            assertSame(targetRootGroup, mHelper.getParentBlockGroup(target));
-            assertSame(targetRootGroup, mHelper.getRootBlockGroup(source));
-            assertSame(targetRootGroup, mHelper.getRootBlockGroup(tail1));
-            assertSame(targetRootGroup, mHelper.getRootBlockGroup(tail2));
+                // Tail has replaced the shadow.
+                assertThat(mWorkspace.isRootBlock(tail1)).isFalse();
+                assertThat(shadowTail.getPreviousBlock()).isNull();
+                assertThat(source).isSameAs(tail1.getParentBlock());
+                assertThat(mWorkspace.isRootBlock(tail2)).isFalse();
+                assertThat(mWorkspace.isRootBlock(source)).isFalse();
+                assertThat(target).isSameAs(tail1.getRootBlock());
+                assertThat(target).isSameAs(tail2.getRootBlock());
 
-            assertSame(targetView, targetRootGroup.getChildAt(0));
-            assertSame(sourceView, targetRootGroup.getChildAt(1));
-            assertSame(tailView1, targetRootGroup.getChildAt(2));
-            assertSame(tailView2, targetRootGroup.getChildAt(3));
+                if (withViews) {
+                    BlockGroup targetRootGroup = mHelper.getRootBlockGroup(target);
+                    assertThat(targetRootGroup).isSameAs(mHelper.getParentBlockGroup(target));
+                    assertThat(targetRootGroup).isSameAs(mHelper.getRootBlockGroup(source));
+                    assertThat(targetRootGroup).isSameAs(mHelper.getRootBlockGroup(tail1));
+                    assertThat(targetRootGroup).isSameAs(mHelper.getRootBlockGroup(tail2));
 
-            assertNull(mHelper.getView(shadowTail));
-        }
+                    assertThat(targetView).isSameAs(targetRootGroup.getChildAt(0));
+                    assertThat(sourceView).isSameAs(targetRootGroup.getChildAt(1));
+                    assertThat(tailView1).isSameAs(targetRootGroup.getChildAt(2));
+                    assertThat(tailView2).isSameAs(targetRootGroup.getChildAt(3));
+
+                    assertThat(mHelper.getView(shadowTail)).isNull();
+                }
+            }
+        });
     }
 
-    public void testConnect_previousToStatement_headless() {
+    @Test
+    public void testConnect_previousToStatement_headless() throws BlockLoadingException {
         testConnect_previousToStatement(false);
     }
 
-    public void testConnect_previousToStatement_withViews() {
+    @Test
+    public void testConnect_previousToStatement_withViews() throws BlockLoadingException {
         testConnect_previousToStatement(true);
     }
 
-    private void testConnect_previousToStatement(boolean withViews) {
+    private void testConnect_previousToStatement(final boolean withViews)
+            throws BlockLoadingException {
         // setup
-        Block target = mBlockFactory.obtainBlock("statement_statement_input", "target");
-        Block source = mBlockFactory.obtainBlock("statement_statement_input", "source");
-        Block shadow = new Block.Builder(source).setShadow(true).setUuid("shadow").build();
+        final Block target = mBlockFactory.obtainBlockFrom(
+                new BlockTemplate().ofType("statement_statement_input").withId("target"));
+        final Block source = mBlockFactory.obtainBlockFrom(
+                new BlockTemplate().ofType("statement_statement_input").withId("source"));
+        final Block shadow = mBlockFactory.obtainBlockFrom(
+                new BlockTemplate().shadow().copyOf(source).withId("shadow"));
 
-        Connection statementConnection = target.getInputByName("statement input").getConnection();
+        runAndSync(new Runnable() {
+            @Override
+            public void run() {
+                Connection statementConnection = target.getInputByName("statement input").getConnection();
 
-        mController.addRootBlock(target);
-        mController.addRootBlock(source);
-        if (withViews) {
-            mController.initWorkspaceView(mWorkspaceView);
-            fakeOnAttachToWindow(target, source);
-        }
+                mController.addRootBlock(target);
+                mController.addRootBlock(source);
+                if (withViews) {
+                    mController.initWorkspaceView(mWorkspaceView);
+                    fakeOnAttachToWindow(target, source);
+                }
 
-        // Run test: Connect source inside target. No prior connection to bump.
-        mController.connect(source.getPreviousConnection(), statementConnection);
+                // Run test: Connect source inside target. No prior connection to bump.
+                mController.connect(source.getPreviousConnection(), statementConnection);
 
-        assertTrue(mWorkspace.isRootBlock(target));
-        assertFalse(mWorkspace.isRootBlock(source));
-        assertSame(target, source.getPreviousBlock());
+                assertThat(mWorkspace.isRootBlock(target)).isTrue();
+                assertThat(mWorkspace.isRootBlock(source)).isFalse();
+                assertThat(target).isSameAs(source.getPreviousBlock());
 
-        if (withViews) {
-            BlockGroup rootGroup = mHelper.getRootBlockGroup(target);
-            assertSame(rootGroup, mHelper.getParentBlockGroup(target));
-            assertSame(rootGroup, mHelper.getRootBlockGroup(source));
-        }
+                if (withViews) {
+                    BlockGroup rootGroup = mHelper.getRootBlockGroup(target);
+                    assertThat(rootGroup).isSameAs(mHelper.getParentBlockGroup(target));
+                    assertThat(rootGroup).isSameAs(mHelper.getRootBlockGroup(source));
+                }
 
-        // Add the shadow block
-        statementConnection.setShadowConnection(shadow.getPreviousConnection());
-        // disconnect the real blocks which should attach the shadow to replace it.
-        mController.extractBlockAsRoot(source);
+                // Add the shadow block
+                statementConnection.setShadowConnection(shadow.getPreviousConnection());
+                // disconnect the real blocks which should attach the shadow to replace it.
+                mController.extractBlockAsRoot(source);
 
-        assertTrue(mWorkspace.isRootBlock(source));
-        assertFalse(mWorkspace.isRootBlock(shadow));
-        assertSame(statementConnection.getTargetBlock(), shadow);
+                assertThat(mWorkspace.isRootBlock(source)).isTrue();
+                assertThat(mWorkspace.isRootBlock(shadow)).isFalse();
+                assertThat(statementConnection.getTargetBlock()).isSameAs(shadow);
 
-        if (withViews) {
-            assertNotNull(mHelper.getView(shadow));
-            assertSame(mHelper.getRootBlockGroup(target), mHelper.getRootBlockGroup(shadow));
-        }
+                if (withViews) {
+                    assertThat(mHelper.getView(shadow)).isNotNull();
+                    assertThat(mHelper.getRootBlockGroup(target))
+                            .isSameAs(mHelper.getRootBlockGroup(shadow));
+                }
 
-        // Reconnect the source and make sure the shadow goes away
-        mController.connect(source.getPreviousConnection(), statementConnection);
-        assertNull(shadow.getPreviousBlock());
-        assertSame(statementConnection.getTargetBlock(), source);
-        assertFalse(mWorkspace.isRootBlock(shadow));
+                // Reconnect the source and make sure the shadow goes away
+                mController.connect(source.getPreviousConnection(), statementConnection);
+                assertThat(shadow.getPreviousBlock()).isNull();
+                assertThat(statementConnection.getTargetBlock()).isSameAs(source);
+                assertThat(mWorkspace.isRootBlock(shadow)).isFalse();
 
-        if (withViews) {
-            assertNull(mHelper.getView(shadow));
-            assertSame(mHelper.getRootBlockGroup(target), mHelper.getRootBlockGroup(source));
-        }
+                if (withViews) {
+                    assertThat(mHelper.getView(shadow)).isNull();
+                    assertThat(mHelper.getRootBlockGroup(target))
+                            .isSameAs(mHelper.getRootBlockGroup(source));
+                }
+            }
+        });
     }
 
-    public void testConnect_previousToStatementSpliceRemainder_headless() {
+    @Test
+    public void testConnect_previousToStatementSpliceRemainder_headless()
+            throws BlockLoadingException {
         testConnect_previousToStatementSpliceRemainder(false);
     }
 
-    public void testConnect_previousToStatementSpliceRemainder_withViews() {
+    @Test
+    public void testConnect_previousToStatementSpliceRemainder_withViews()
+            throws BlockLoadingException {
         testConnect_previousToStatementSpliceRemainder(true);
     }
 
-    private void testConnect_previousToStatementSpliceRemainder(boolean withViews) {
+    private void testConnect_previousToStatementSpliceRemainder(final boolean withViews)
+            throws BlockLoadingException {
         // setup
-        Block target = mBlockFactory.obtainBlock("statement_statement_input", "target");
-        Block tail = mBlockFactory.obtainBlock("statement_statement_input", "tail");
-        Block source = mBlockFactory.obtainBlock("statement_statement_input", "source");
-        Block shadow = new Block.Builder(tail).setShadow(true).setUuid("shadow").build();
-        BlockView targetView = null, tailView = null, sourceView = null;
+        final Block target = mBlockFactory.obtainBlockFrom(
+                new BlockTemplate().ofType("statement_statement_input").withId("target"));
+        final Block tail = mBlockFactory.obtainBlockFrom(
+                new BlockTemplate().ofType("statement_statement_input").withId("tail"));
+        final Block source = mBlockFactory.obtainBlockFrom(
+                new BlockTemplate().ofType("statement_statement_input").withId("source"));
+        final Block shadow = mBlockFactory.obtainBlockFrom(
+                new BlockTemplate().shadow().copyOf(source));
 
-        Connection statementConnection =  target.getInputByName("statement input").getConnection();
-        // and set a shadow to make sure it has no effects
-        statementConnection.setShadowConnection(shadow.getPreviousConnection());
-        // Connect the tail inside target.
-        statementConnection.connect(tail.getPreviousConnection());
+        runAndSync(new Runnable() {
+            @Override
+            public void run() {
+                BlockView targetView = null, tailView = null, sourceView = null;
 
-        mController.addRootBlock(target);
-        mController.addRootBlock(source);
-        if (withViews) {
-            mController.initWorkspaceView(mWorkspaceView);
-            fakeOnAttachToWindow(target, source);
+                Connection statementConnection =  target.getInputByName("statement input").getConnection();
+                // and set a shadow to make sure it has no effects
+                statementConnection.setShadowConnection(shadow.getPreviousConnection());
+                // Connect the tail inside target.
+                statementConnection.connect(tail.getPreviousConnection());
 
-            targetView = mHelper.getView(target);
-            tailView = mHelper.getView(tail);
-            sourceView = mHelper.getView(source);
+                mController.addRootBlock(target);
+                mController.addRootBlock(source);
+                if (withViews) {
+                    mController.initWorkspaceView(mWorkspaceView);
+                    fakeOnAttachToWindow(target, source);
 
-            assertNotNull(targetView);
-            assertNotNull(tailView);
-            assertNotNull(sourceView);
-        }
+                    targetView = mHelper.getView(target);
+                    tailView = mHelper.getView(tail);
+                    sourceView = mHelper.getView(source);
 
-        // Run test: Connect source inside target, where tail is attached, resulting in a splice.
-        mController.connect(source.getPreviousConnection(), statementConnection);
+                    assertThat(targetView).isNotNull();
+                    assertThat(tailView).isNotNull();
+                    assertThat(sourceView).isNotNull();
+                }
 
-        // Validate result.
-        assertTrue(mWorkspace.isRootBlock(target));
-        assertFalse(mWorkspace.isRootBlock(tail));
-        assertFalse(mWorkspace.isRootBlock(source));
-        assertSame(target, source.getPreviousBlock());
-        assertSame(source, tail.getPreviousBlock());
+                // Run test: Connect source inside target, where tail is attached, resulting in a splice.
+                mController.connect(source.getPreviousConnection(), statementConnection);
 
-        if (withViews) {
-            BlockGroup rootGroup = mHelper.getRootBlockGroup(target);
-            BlockGroup secondGroup = mHelper.getParentBlockGroup(tail);
-            assertSame(rootGroup, mHelper.getRootBlockGroup(tail));
-            assertNotSame(rootGroup, secondGroup);
-            assertSame(secondGroup, mHelper.getParentBlockGroup(source));
-            assertSame(sourceView, secondGroup.getChildAt(0));
-            assertSame(tailView, secondGroup.getChildAt(1));
-        }
+                // Validate result.
+                assertThat(mWorkspace.isRootBlock(target)).isTrue();
+                assertThat(mWorkspace.isRootBlock(tail)).isFalse();
+                assertThat(mWorkspace.isRootBlock(source)).isFalse();
+                assertThat(target).isSameAs(source.getPreviousBlock());
+                assertThat(source).isSameAs(tail.getPreviousBlock());
+
+                if (withViews) {
+                    BlockGroup rootGroup = mHelper.getRootBlockGroup(target);
+                    BlockGroup secondGroup = mHelper.getParentBlockGroup(tail);
+                    assertThat(rootGroup).isSameAs(mHelper.getRootBlockGroup(tail));
+                    assertThat(rootGroup).isNotSameAs(secondGroup);
+                    assertThat(secondGroup).isSameAs(mHelper.getParentBlockGroup(source));
+                    assertThat(sourceView).isSameAs(secondGroup.getChildAt(0));
+                    assertThat(tailView).isSameAs(secondGroup.getChildAt(1));
+                }
+            }
+        });
     }
 
-    public void testConnect_previousToStatemenBumpRemainder_headless() {
+    @Test
+    public void testConnect_previousToStatemenBumpRemainder_headless()
+            throws BlockLoadingException {
         testConnect_previousToStatementBumpRemainder(false);
     }
 
-    public void testConnect_previousToStatemenBumpRemainder_withViews() {
+    @Test
+    public void testConnect_previousToStatemenBumpRemainder_withViews()
+            throws BlockLoadingException {
         testConnect_previousToStatementBumpRemainder(true);
     }
 
-    private void testConnect_previousToStatementBumpRemainder(boolean withViews) {
-        Block target = mBlockFactory.obtainBlock("statement_statement_input", "target");
-        Block tail = mBlockFactory.obtainBlock("statement_statement_input", "tail");
-        Block source = mBlockFactory.obtainBlock("statement_no_next", "source");
-        BlockView sourceView = null;
+    private void testConnect_previousToStatementBumpRemainder(final boolean withViews)
+            throws BlockLoadingException {
+        final Block target = mBlockFactory.obtainBlockFrom(
+                new BlockTemplate().ofType("statement_statement_input").withId("target"));
+        final Block tail = mBlockFactory.obtainBlockFrom(
+                new BlockTemplate().ofType("statement_statement_input").withId("tail"));
+        final Block source = mBlockFactory.obtainBlockFrom(
+                new BlockTemplate().ofType("statement_no_next").withId("source"));
 
-        // Connect tail inside target.
-        target.getInputByName("statement input").getConnection()
-                .connect(tail.getPreviousConnection());
+        runAndSync(new Runnable() {
+            @Override
+            public void run() {
+                BlockView sourceView = null;
 
-        mController.addRootBlock(target);
-        mController.addRootBlock(source);
-        if (withViews) {
-            mController.initWorkspaceView(mWorkspaceView);
-            fakeOnAttachToWindow(target, source);
+                // Connect tail inside target.
+                target.getInputByName("statement input").getConnection()
+                        .connect(tail.getPreviousConnection());
 
-            sourceView = mHelper.getView(source);
-            assertNotNull(sourceView);
-        }
+                mController.addRootBlock(target);
+                mController.addRootBlock(source);
+                if (withViews) {
+                    mController.initWorkspaceView(mWorkspaceView);
+                    fakeOnAttachToWindow(target, source);
 
-        // Connect source inside target, where tail is attached.  Source does not have a next, so
-        // this will bump tail back to the root.
-        mController.connect(source.getPreviousConnection(),
-                            target.getInputByName("statement input").getConnection());
+                    sourceView = mHelper.getView(source);
+                    assertThat(sourceView).isNotNull();
+                }
 
-        // Validate
-        assertTrue(mWorkspace.isRootBlock(target));
-        assertTrue(mWorkspace.isRootBlock(tail));
-        assertFalse(mWorkspace.isRootBlock(source));
-        assertSame(target.getInputByName("statement input").getConnection(),
-                source.getPreviousConnection().getTargetConnection());
-        assertNull(tail.getPreviousBlock());
+                // Connect source inside target, where tail is attached.  Source does not have a next, so
+                // this will bump tail back to the root.
+                mController.connect(source.getPreviousConnection(),
+                        target.getInputByName("statement input").getConnection());
 
-        if (withViews) {
-            BlockGroup targetRootGroup = mHelper.getRootBlockGroup(target);
-            BlockGroup tailRootGroup = mHelper.getRootBlockGroup(tail);
-            BlockGroup sourceGroup = mHelper.getParentBlockGroup(source);
-            assertSame(targetRootGroup, mHelper.getParentBlockGroup(target));
-            assertNotSame(targetRootGroup, tailRootGroup);
-            assertSame(tailRootGroup, mHelper.getParentBlockGroup(tail));
-            assertSame(targetRootGroup, mHelper.getRootBlockGroup(source));
-            assertSame(sourceGroup.getParent(), target.getInputByName("statement input").getView());
-            assertSame(sourceView, sourceGroup.getChildAt(0));
-            assertTrue(mHelper.getMaxSnapDistance() <=
-                    source.getPreviousConnection().distanceFrom(tail.getPreviousConnection()));
-        }
+                // Validate
+                assertThat(mWorkspace.isRootBlock(target)).isTrue();
+                assertThat(mWorkspace.isRootBlock(tail)).isTrue();
+                assertThat(mWorkspace.isRootBlock(source)).isFalse();
+                assertThat(target.getInputByName("statement input").getConnection())
+                        .isSameAs(source.getPreviousConnection().getTargetConnection());
+                assertThat(tail.getPreviousBlock()).isNull();
+
+                if (withViews) {
+                    BlockGroup targetRootGroup = mHelper.getRootBlockGroup(target);
+                    BlockGroup tailRootGroup = mHelper.getRootBlockGroup(tail);
+                    BlockGroup sourceGroup = mHelper.getParentBlockGroup(source);
+                    assertThat(targetRootGroup).isSameAs(mHelper.getParentBlockGroup(target));
+                    assertThat(targetRootGroup).isNotSameAs(tailRootGroup);
+                    assertThat(tailRootGroup).isSameAs(mHelper.getParentBlockGroup(tail));
+                    assertThat(targetRootGroup).isSameAs(mHelper.getRootBlockGroup(source));
+                    assertThat(sourceGroup.getParent())
+                            .isSameAs(target.getInputByName("statement input").getView());
+                    assertThat(sourceView).isSameAs(sourceGroup.getChildAt(0));
+
+                    double connectionDist =
+                            source.getPreviousConnection().distanceFrom(tail.getPreviousConnection());
+                    assertThat(connectionDist).named("bumped connection distance")
+                            .isGreaterThan((double) mHelper.getMaxSnapDistance());
+                }
+            }
+        });
     }
 
-    public void testConnect_previousToStatementShadowSplice_headless() {
+    @Test
+    public void testConnect_previousToStatementShadowSplice_headless()
+            throws BlockLoadingException {
         testConnect_previousToStatementShadowSplice(false);
     }
 
-    public void testConnect_previousToStatementShadowSplice_withViews() {
+    @Test
+    public void testConnect_previousToStatementShadowSplice_withViews()
+            throws BlockLoadingException {
         testConnect_previousToStatementShadowSplice(true);
     }
 
-    private void testConnect_previousToStatementShadowSplice(boolean withViews) {
-        Block target = mBlockFactory.obtainBlock("statement_statement_input", "target");
-        Block tail = mBlockFactory.obtainBlock("statement_statement_input", "tail");
-        Block source = mBlockFactory.obtainBlock("statement_no_input", "source");
-        Block shadow = new Block.Builder(source).setShadow(true).setUuid("shadow").build();
-        BlockView sourceView = null;
+    private void testConnect_previousToStatementShadowSplice(final boolean withViews)
+            throws BlockLoadingException {
+        final Block target = mBlockFactory.obtainBlockFrom(
+                new BlockTemplate().ofType("statement_statement_input").withId("target"));
+        final Block tail = mBlockFactory.obtainBlockFrom(
+                new BlockTemplate().ofType("statement_statement_input").withId("tail"));
+        final Block source = mBlockFactory.obtainBlockFrom(
+                new BlockTemplate().ofType("statement_no_input").withId("source"));
+        final Block shadow = mBlockFactory.obtainBlockFrom(
+                new BlockTemplate().shadow().copyOf(source).withId("shadow"));
 
-        // Connect tail inside target.
-        Connection statementConnection = target.getInputByName("statement input").getConnection();
-        statementConnection.connect(tail.getPreviousConnection());
+        runAndSync(new Runnable() {
+            @Override
+            public void run() {
+                BlockView sourceView = null;
 
-        // Add the shadow to the source
-        source.getNextConnection().setShadowConnection(shadow.getPreviousConnection());
-        source.getNextConnection().connect(shadow.getPreviousConnection());
+                // Connect tail inside target.
+                Connection statementConnection = target.getInputByName("statement input").getConnection();
+                statementConnection.connect(tail.getPreviousConnection());
 
-        mController.addRootBlock(target);
-        mController.addRootBlock(source);
-        if (withViews) {
-            mController.initWorkspaceView(mWorkspaceView);
-            fakeOnAttachToWindow(target, source);
+                // Add the shadow to the source
+                source.getNextConnection().setShadowConnection(shadow.getPreviousConnection());
+                source.getNextConnection().connect(shadow.getPreviousConnection());
 
-            sourceView = mHelper.getView(source);
-            assertNotNull(sourceView);
-            assertNotNull(mHelper.getView(shadow));
-        }
+                mController.addRootBlock(target);
+                mController.addRootBlock(source);
+                if (withViews) {
+                    mController.initWorkspaceView(mWorkspaceView);
+                    fakeOnAttachToWindow(target, source);
 
-        // Connect source inside target, where tail is attached.  Source has a shadow on next, so
-        // tail should replace it.
-        mController.connect(source.getPreviousConnection(), statementConnection);
+                    sourceView = mHelper.getView(source);
+                    assertThat(sourceView).isNotNull();
+                    assertThat(mHelper.getView(shadow)).isNotNull();
+                }
 
-        // Validate
-        assertTrue(mWorkspace.isRootBlock(target));
-        assertFalse(mWorkspace.isRootBlock(tail));
-        assertFalse(mWorkspace.isRootBlock(source));
-        assertSame(statementConnection, source.getPreviousConnection().getTargetConnection());
-        assertSame(source, tail.getPreviousBlock());
-        assertNull(shadow.getParentBlock());
+                // Connect source inside target, where tail is attached.  Source has a shadow on next, so
+                // tail should replace it.
+                mController.connect(source.getPreviousConnection(), statementConnection);
 
-        if (withViews) {
-            BlockGroup targetRootGroup = mHelper.getRootBlockGroup(target);
-            BlockGroup sourceGroup = mHelper.getParentBlockGroup(source);
-            assertSame(targetRootGroup, mHelper.getParentBlockGroup(target));
-            assertSame(targetRootGroup, mHelper.getRootBlockGroup(tail));
-            assertSame(sourceGroup, mHelper.getParentBlockGroup(tail));
-            assertSame(targetRootGroup, mHelper.getRootBlockGroup(source));
-            assertSame(sourceGroup.getParent(), target.getInputByName("statement input").getView());
-            assertSame(sourceView, sourceGroup.getChildAt(0));
-            assertSame(mHelper.getView(tail), sourceGroup.getChildAt(1));
+                // Validate
+                assertThat(mWorkspace.isRootBlock(target)).isTrue();
+                assertThat(mWorkspace.isRootBlock(tail)).isFalse();
+                assertThat(mWorkspace.isRootBlock(source)).isFalse();
+                assertThat(statementConnection)
+                        .isSameAs(source.getPreviousConnection().getTargetConnection());
+                assertThat(source).isSameAs(tail.getPreviousBlock());
+                assertThat(shadow.getParentBlock()).isNull();
 
-            assertNull(mHelper.getView(shadow));
-        }
+                if (withViews) {
+                    BlockGroup targetRootGroup = mHelper.getRootBlockGroup(target);
+                    BlockGroup sourceGroup = mHelper.getParentBlockGroup(source);
+                    assertThat(targetRootGroup).isSameAs(mHelper.getParentBlockGroup(target));
+                    assertThat(targetRootGroup).isSameAs(mHelper.getRootBlockGroup(tail));
+                    assertThat(sourceGroup).isSameAs(mHelper.getParentBlockGroup(tail));
+                    assertThat(targetRootGroup).isSameAs(mHelper.getRootBlockGroup(source));
+                    assertThat(sourceGroup.getParent())
+                            .isSameAs(target.getInputByName("statement input").getView());
+                    assertThat(sourceView).isSameAs(sourceGroup.getChildAt(0));
+                    assertThat(mHelper.getView(tail)).isSameAs(sourceGroup.getChildAt(1));
 
-        // Make sure nothing breaks when we detach the tail and the shadow comes back
-        mController.extractBlockAsRoot(tail);
+                    assertThat(mHelper.getView(shadow)).isNull();
+                }
+
+                // Make sure nothing breaks when we detach the tail and the shadow comes back
+                mController.extractBlockAsRoot(tail);
+            }
+        });
     }
 
-    public void testExtractAsRootBlock_alreadyRoot_headless() {
+    @Test
+    public void testExtractAsRootBlock_alreadyRoot_headless() throws BlockLoadingException {
         testExtractAsRootBlock_alreadyRoot(false);
     }
 
-    public void testExtractAsRootBlock_alreadyRoot_withViews() {
+    @Test
+    public void testExtractAsRootBlock_alreadyRoot_withViews() throws BlockLoadingException {
         testExtractAsRootBlock_alreadyRoot(true);
     }
 
-    private void testExtractAsRootBlock_alreadyRoot(boolean withViews) {
+    private void testExtractAsRootBlock_alreadyRoot(final boolean withViews)
+            throws BlockLoadingException {
         // Configure
-        Block block = mBlockFactory.obtainBlock("statement_statement_input", "block");
-        mController.addRootBlock(block);
-        if (withViews) {
-            mController.initWorkspaceView(mWorkspaceView);
-            fakeOnAttachToWindow(block);
-        }
+        final Block block = mBlockFactory.obtainBlockFrom(
+                new BlockTemplate().ofType("statement_statement_input").withId("block"));
 
-        // Check Preconditions
-        assertEquals(mWorkspace.getRootBlocks().size(), 1);
-        assertTrue(mWorkspace.getRootBlocks().contains(block));
+        runAndSync(new Runnable() {
+            @Override
+            public void run() {
+                mController.addRootBlock(block);
+                if (withViews) {
+                    mController.initWorkspaceView(mWorkspaceView);
+                    fakeOnAttachToWindow(block);
+                }
 
-        // Run test: Make block a root (even though it already is).
-        mController.extractBlockAsRoot(block);
+                // Check Preconditions
+                assertThat(1).isEqualTo(mWorkspace.getRootBlocks().size());
+                assertThat(mWorkspace.getRootBlocks().contains(block)).isTrue();
 
-        // Validate (no change)
-        assertEquals(mWorkspace.getRootBlocks().size(), 1);
-        assertTrue(mWorkspace.getRootBlocks().contains(block));
+                // Run test: Make block a root (even though it already is).
+                mController.extractBlockAsRoot(block);
 
-        if (withViews) {
-            BlockGroup firstGroup = mHelper.getParentBlockGroup(block);
-            assertSame(firstGroup, mHelper.getRootBlockGroup(block));
-        }
+                // Validate (no change)
+                assertThat(1).isEqualTo(mWorkspace.getRootBlocks().size());
+                assertThat(mWorkspace.getRootBlocks().contains(block)).isTrue();
+
+                if (withViews) {
+                    BlockGroup firstGroup = mHelper.getParentBlockGroup(block);
+                    assertThat(firstGroup).isSameAs(mHelper.getRootBlockGroup(block));
+                }
+            }
+        });
     }
 
-    public void testExtractBlockAsRoot_fromInput_headless() {
+    @Test
+    public void testExtractBlockAsRoot_fromInput_headless() throws BlockLoadingException {
         testExtractBlockAsRoot_fromInput(false);
     }
 
-    public void testExtractBlockAsRoot_fromInput_withViews() {
+    @Test
+    public void testExtractBlockAsRoot_fromInput_withViews() throws BlockLoadingException {
         testExtractBlockAsRoot_fromInput(true);
     }
 
-    private void testExtractBlockAsRoot_fromInput(boolean withViews) {
-        Block first = mBlockFactory.obtainBlock("simple_input_output", "first block");
-        Block second = mBlockFactory.obtainBlock("simple_input_output", "second block");
-        mController.connect(
-                second.getOutputConnection(), first.getOnlyValueInput().getConnection());
-        mController.addRootBlock(first);
-        if (withViews) {
-            mController.initWorkspaceView(mWorkspaceView);
-            fakeOnAttachToWindow(first, second);
-        }
+    private void testExtractBlockAsRoot_fromInput(final boolean withViews)
+            throws BlockLoadingException {
+        final Block first = mBlockFactory.obtainBlockFrom(
+                new BlockTemplate().ofType("simple_input_output").withId("first block"));
+        final Block second = mBlockFactory.obtainBlockFrom(
+                new BlockTemplate().ofType("simple_input_output").withId("second block"));
 
-        // Check preconditions
-        List<Block> rootBlocks = mWorkspace.getRootBlocks();
-        assertEquals(rootBlocks.size(), 1);
-        assertEquals(rootBlocks.get(0), first);
+        runAndSync(new Runnable() {
+            @Override
+            public void run() {
+                mController.connect(
+                        second.getOutputConnection(), first.getOnlyValueInput().getConnection());
+                mController.addRootBlock(first);
+                if (withViews) {
+                    mController.initWorkspaceView(mWorkspaceView);
+                    fakeOnAttachToWindow(first, second);
+                }
 
-        // Run test: Extract second out from under first.
-        mController.extractBlockAsRoot(second);
+                // Check preconditions
+                List<Block> rootBlocks = mWorkspace.getRootBlocks();
+                assertThat(1).isEqualTo(rootBlocks.size());
+                assertThat(first).isEqualTo(rootBlocks.get(0));
 
-        rootBlocks = mWorkspace.getRootBlocks();
-        assertEquals(rootBlocks.size(), 2);
-        assertTrue(rootBlocks.contains(first));
-        assertTrue(rootBlocks.contains(second));
-        assertFalse(first.getOnlyValueInput().getConnection().isConnected());
-        assertFalse(second.getOutputConnection().isConnected());
+                // Run test: Extract second out from under first.
+                mController.extractBlockAsRoot(second);
 
-        if (withViews) {
-            BlockGroup firstGroup = mHelper.getParentBlockGroup(first);
-            assertNotNull(firstGroup);
-            BlockGroup secondGroup = mHelper.getParentBlockGroup(second);
-            assertNotNull(secondGroup);
-            assertNotSame(secondGroup, firstGroup);
-        }
+                rootBlocks = mWorkspace.getRootBlocks();
+                assertThat(2).isEqualTo(rootBlocks.size());
+                assertThat(rootBlocks.contains(first)).isTrue();
+                assertThat(rootBlocks.contains(second)).isTrue();
+                assertThat(first.getOnlyValueInput().getConnection().isConnected()).isFalse();
+                assertThat(second.getOutputConnection().isConnected()).isFalse();
+
+                if (withViews) {
+                    BlockGroup firstGroup = mHelper.getParentBlockGroup(first);
+                    assertThat(firstGroup).isNotNull();
+                    BlockGroup secondGroup = mHelper.getParentBlockGroup(second);
+                    assertThat(secondGroup).isNotNull();
+                    assertThat(secondGroup).isNotSameAs(firstGroup);
+                }
+            }
+        });
     }
 
-    public void testExtractBlockAsRoot_fromNext_headless() {
+    @Test
+    public void testExtractBlockAsRoot_fromNext_headless() throws BlockLoadingException {
         testExtractBlockAsRoot_fromNext(false);
     }
 
-    public void testExtractBlockAsRoot_fromNext_withViews() {
+    @Test
+    public void testExtractBlockAsRoot_fromNext_withViews() throws BlockLoadingException {
         testExtractBlockAsRoot_fromNext(true);
     }
 
-    private void testExtractBlockAsRoot_fromNext(boolean withViews) {
+    private void testExtractBlockAsRoot_fromNext(final boolean withViews)
+            throws BlockLoadingException {
         // Configure
-        Block first = mBlockFactory.obtainBlock("statement_statement_input", "first block");
-        Block second = mBlockFactory.obtainBlock("statement_statement_input", "second block");
-        mController.connect(second.getPreviousConnection(), first.getNextConnection());
-        mController.addRootBlock(first);
-        if (withViews) {
-            mController.initWorkspaceView(mWorkspaceView);
-            fakeOnAttachToWindow(first, second);
-        }
+        final Block first = mBlockFactory.obtainBlockFrom(
+                new BlockTemplate().ofType("statement_statement_input").withId("first block"));
+        final Block second = mBlockFactory.obtainBlockFrom(
+                new BlockTemplate().ofType("statement_statement_input").withId("second block"));
 
-        // Check preconditions
-        List<Block> rootBlocks = mWorkspace.getRootBlocks();
-        assertEquals(rootBlocks.size(), 1);
-        assertEquals(rootBlocks.get(0), first);
-        assertEquals(second, first.getNextConnection().getTargetBlock());
-        if (withViews) {
-            assertSame(mHelper.getParentBlockGroup(first),
-                    mHelper.getParentBlockGroup(second));
-        }
+        runAndSync(new Runnable() {
+            @Override
+            public void run() {
+                mController.connect(second.getPreviousConnection(), first.getNextConnection());
+                mController.addRootBlock(first);
+                if (withViews) {
+                    mController.initWorkspaceView(mWorkspaceView);
+                    fakeOnAttachToWindow(first, second);
+                }
 
-        // Run test: Extract second out from under first.
-        mController.extractBlockAsRoot(second);
+                // Check preconditions
+                List<Block> rootBlocks = mWorkspace.getRootBlocks();
+                assertThat(1).isEqualTo(rootBlocks.size());
+                assertThat(first).isEqualTo(rootBlocks.get(0));
+                assertThat(first.getNextConnection().getTargetBlock()).isEqualTo(second);
+                if (withViews) {
+                    assertThat(mHelper.getParentBlockGroup(first))
+                            .isSameAs(mHelper.getParentBlockGroup(second));
+                }
 
-        // Validate
-        rootBlocks = mWorkspace.getRootBlocks();
-        assertEquals(rootBlocks.size(), 2);
-        assertTrue(rootBlocks.contains(first));
-        assertTrue(rootBlocks.contains(second));
-        assertFalse(first.getNextConnection().isConnected());
-        assertFalse(second.getPreviousConnection().isConnected());
+                // Run test: Extract second out from under first.
+                mController.extractBlockAsRoot(second);
 
-        if (withViews) {
-            BlockGroup firstGroup = mHelper.getParentBlockGroup(first);
-            assertNotNull(firstGroup);
-            BlockGroup secondGroup = mHelper.getParentBlockGroup(second);
-            assertNotNull(secondGroup);
-            assertNotSame(secondGroup, firstGroup);
-        }
+                // Validate
+                rootBlocks = mWorkspace.getRootBlocks();
+                assertThat(2).isEqualTo(rootBlocks.size());
+                assertThat(rootBlocks.contains(first)).isTrue();
+                assertThat(rootBlocks.contains(second)).isTrue();
+                assertThat(first.getNextConnection().isConnected()).isFalse();
+                assertThat(second.getPreviousConnection().isConnected()).isFalse();
+
+                if (withViews) {
+                    BlockGroup firstGroup = mHelper.getParentBlockGroup(first);
+                    assertThat(firstGroup).isNotNull();
+                    BlockGroup secondGroup = mHelper.getParentBlockGroup(second);
+                    assertThat(secondGroup).isNotNull();
+                    assertThat(secondGroup).isNotSameAs(firstGroup);
+                }
+            }
+        });
     }
 
+    @Test
     public void testVariableCallback_onCreate() {
-        NameManager.VariableNameManager nameManager =
-                (NameManager.VariableNameManager) mController.getWorkspace()
-                        .getVariableNameManager();
+        runAndSync(new Runnable() {
+            @Override
+            public void run() {
+                NameManager.VariableNameManager nameManager =
+                        (NameManager.VariableNameManager) mController.getWorkspace()
+                                .getVariableNameManager();
 
-        assertNull(mVariableCallback.onCreateVariable);
+                assertThat(mVariableCallback.onCreateVariable).isNull();
 
-        // Calling requestAddVariable and the callback blocking creation
-        mVariableCallback.whenOnCreateCalled = false;
-        mController.requestAddVariable("var1");
-        assertEquals("var1", mVariableCallback.onCreateVariable);
-        assertEquals(0, nameManager.getUsedNames().size());
+                // Calling requestAddVariable and the callback blocking creation
+                mVariableCallback.whenOnCreateCalled = false;
+                mController.requestAddVariable("var1");
+                assertThat(mVariableCallback.onCreateVariable).isEqualTo("var1");
+                assertThat(nameManager.getUsedNames().size()).isEqualTo(0);
 
-        // Calling addVariable bypasses the callback
-        mVariableCallback.onCreateVariable = null;
-        mController.addVariable("var1");
-        assertNull(mVariableCallback.onCreateVariable);
-        assertTrue(nameManager.contains("var1"));
+                // Calling addVariable bypasses the callback
+                mVariableCallback.onCreateVariable = null;
+                mController.addVariable("var1");
+                assertThat(mVariableCallback.onCreateVariable).isNull();
+                assertThat(nameManager.contains("var1")).isTrue();
 
-        // Calling requestAddVariable and the callback allows creation
-        mVariableCallback.reset();
-        mVariableCallback.whenOnCreateCalled = true;
-        mController.requestAddVariable("var2");
-        assertEquals("var2", mVariableCallback.onCreateVariable);
-        assertTrue(nameManager.contains("var2"));
+                // Calling requestAddVariable and the callback allows creation
+                mVariableCallback.reset();
+                mVariableCallback.whenOnCreateCalled = true;
+                mController.requestAddVariable("var2");
+                assertThat(mVariableCallback.onCreateVariable).isEqualTo("var2");
+                assertThat(nameManager.contains("var2")).isTrue();
+            }
+        });
     }
 
+    @Test
     public void testVariableCallback_onRename() {
-        NameManager.VariableNameManager nameManager =
-                (NameManager.VariableNameManager) mController.getWorkspace()
-                        .getVariableNameManager();
-        mController.addVariable("var1");
-        mController.addVariable("var2");
+        runAndSync(new Runnable() {
+            @Override
+            public void run() {
+                NameManager.VariableNameManager nameManager =
+                        (NameManager.VariableNameManager) mController.getWorkspace()
+                                .getVariableNameManager();
+                mController.addVariable("var1");
+                mController.addVariable("var2");
 
-        // Calling rename without forcing and the callback blocks it
-        mVariableCallback.whenOnRenameCalled = false;
-        mController.requestRenameVariable("var1", "var3");
-        assertEquals("var1", mVariableCallback.onRenameVariable);
-        assertFalse(nameManager.contains("var3"));
-        assertTrue(nameManager.contains("var1"));
+                // Calling rename without forcing and the callback blocks it
+                mVariableCallback.whenOnRenameCalled = false;
+                mController.requestRenameVariable("var1", "var3");
+                assertThat(mVariableCallback.onRenameVariable).isEqualTo("var1");
+                assertThat(nameManager.contains("var3")).isFalse();
+                assertThat(nameManager.contains("var1")).isTrue();
 
-        // Calling rename with forcing skips the callback
-        mVariableCallback.onRenameVariable = null;
-        mController.renameVariable("var1", "var3");
-        assertNull(mVariableCallback.onRenameVariable);
-        assertTrue(nameManager.contains("var3"));
-        assertFalse(nameManager.contains("var1"));
+                // Calling rename with forcing skips the callback
+                mVariableCallback.onRenameVariable = null;
+                mController.renameVariable("var1", "var3");
+                assertThat(mVariableCallback.onRenameVariable).isNull();
+                assertThat(nameManager.contains("var3")).isTrue();
+                assertThat(nameManager.contains("var1")).isFalse();
 
-        // Calling rename without forcing and the callback allows it
-        mVariableCallback.whenOnRenameCalled = true;
-        mController.requestRenameVariable("var2", "var4");
-        assertEquals("var2", mVariableCallback.onRenameVariable);
-        assertTrue(nameManager.contains("var4"));
-        assertFalse(nameManager.contains("var2"));
+                // Calling rename without forcing and the callback allows it
+                mVariableCallback.whenOnRenameCalled = true;
+                mController.requestRenameVariable("var2", "var4");
+                assertThat(mVariableCallback.onRenameVariable).isEqualTo("var2");
+                assertThat(nameManager.contains("var4")).isTrue();
+                assertThat(nameManager.contains("var2")).isFalse();
 
-        // Verify that we have two variables still
-        assertEquals(2, nameManager.size());
+                // Verify that we have two variables still
+                assertThat(nameManager.size()).isEqualTo(2);
+            }
+        });
     }
 
+    @Test
     public void testVariableCallback_onRemove() {
-        NameManager.VariableNameManager nameManager =
-                (NameManager.VariableNameManager) mController.getWorkspace()
-                        .getVariableNameManager();
-        mController.addVariable("var3");
-        mController.addVariable("var4");
+        runAndSync(new Runnable() {
+            @Override
+            public void run() {
+                NameManager.VariableNameManager nameManager =
+                        (NameManager.VariableNameManager) mController.getWorkspace()
+                                .getVariableNameManager();
+                mController.addVariable("var3");
+                mController.addVariable("var4");
 
-        // Calling delete without forcing and the callback blocks it
-        mVariableCallback.whenOnDeleteCalled = false;
-        mController.requestDeleteVariable("var3");
-        assertEquals("var3", mVariableCallback.onDeleteVariable);
-        assertTrue(nameManager.contains("var3"));
+                // Calling delete without forcing and the callback blocks it
+                mVariableCallback.whenOnDeleteCalled = false;
+                mController.requestDeleteVariable("var3");
+                assertThat(mVariableCallback.onDeleteVariable).isEqualTo("var3");
+                assertThat(nameManager.contains("var3")).isTrue();
 
-        // Calling delete with forcing skips callback
-        mVariableCallback.onDeleteVariable = null;
-        mController.deleteVariable("var3");
-        assertNull(mVariableCallback.onDeleteVariable);
-        assertFalse(nameManager.contains("var3"));
+                // Calling delete with forcing skips callback
+                mVariableCallback.onDeleteVariable = null;
+                mController.deleteVariable("var3");
+                assertThat(mVariableCallback.onDeleteVariable).isNull();
+                assertThat(nameManager.contains("var3")).isFalse();
 
-        // Calling delete without forcing and callback allows it
-        mVariableCallback.whenOnDeleteCalled = true;
-        mController.requestDeleteVariable("var4");
-        assertEquals("var4", mVariableCallback.onDeleteVariable);
-        assertFalse(nameManager.contains("var4"));
+                // Calling delete without forcing and callback allows it
+                mVariableCallback.whenOnDeleteCalled = true;
+                mController.requestDeleteVariable("var4");
+                assertThat(mVariableCallback.onDeleteVariable).isEqualTo("var4");
+                assertThat(nameManager.contains("var4")).isFalse();
 
-        // Verify that we have no variables left
-        assertEquals(0, nameManager.size());
+                // Verify that we have no variables left
+                assertThat(nameManager.size()).isEqualTo(0);
+            }
+        });
     }
 
-    public void testRemoveVariable() {
-        mController.addVariable("var1");
-        mController.addVariable("var2");
-        mController.addVariable("var3");
-        mController.addVariable("var4");
+    @Test
+    public void testCreateVariableDoesNotChangeCase() {
+        runAndSync(new Runnable() {
+            @Override
+            public void run() {
+                String name = "NEW VAR NAME";
 
-        Block set1 = mBlockFactory.obtainBlock("set_variable", "first block");
-        Block set2 = mBlockFactory.obtainBlock("set_variable", "second block");
-        Block set3 = mBlockFactory.obtainBlock("set_variable", "third block");
-        Block set4 = mBlockFactory.obtainBlock("set_variable", "fourth block");
-        Block set5 = mBlockFactory.obtainBlock("set_variable", "fifth block");
-        Block set6 = mBlockFactory.obtainBlock("set_variable", "sixth block");
-        Block statement = mBlockFactory.obtainBlock("statement_statement_input", "statement block");
-        Block get1 = mBlockFactory.obtainBlock("get_variable", "get1");
-        Block get2 = mBlockFactory.obtainBlock("get_variable", "get2");
-        Block get3 = mBlockFactory.obtainBlock("get_variable", "get3");
+                String finalName = mController.addVariable(name);
 
-        mController.connect(statement.getInputs().get(0).getConnection(),
-                set1.getPreviousConnection());
-        mController.connect(set1.getNextConnection(), set2.getPreviousConnection());
-        mController.connect(set2.getNextConnection(), set3.getPreviousConnection());
-        mController.connect(set3.getNextConnection(), set4.getPreviousConnection());
-        mController.connect(set4.getNextConnection(), set5.getPreviousConnection());
-        mController.connect(set2.getOnlyValueInput().getConnection(), get1.getOutputConnection());
-        mController.connect(set5.getOnlyValueInput().getConnection(), get2.getOutputConnection());
-
-        FieldVariable var = (FieldVariable) set1.getFieldByName("variable");
-        var.setVariable("var1");
-        var = (FieldVariable) set2.getFieldByName("variable");
-        var.setVariable("var2");
-        var = (FieldVariable) set3.getFieldByName("variable");
-        var.setVariable("var1");
-        var = (FieldVariable) set4.getFieldByName("variable");
-        var.setVariable("var3");
-        var = (FieldVariable) set5.getFieldByName("variable");
-        var.setVariable("var1");
-        var = (FieldVariable) set6.getFieldByName("variable");
-        var.setVariable("var1");
-        var = (FieldVariable) get1.getFieldByName("variable");
-        var.setVariable("var1");
-        var = (FieldVariable) get2.getFieldByName("variable");
-        var.setVariable("var4");
-        var = (FieldVariable) get3.getFieldByName("variable");
-        var.setVariable("var1");
-
-        mController.addRootBlock(statement);
-        mController.addRootBlock(set6);
-        mController.addRootBlock(get3);
-
-        // Workspace setup:
-        // Statement block with a statement input
-        //     set1 "var1"
-        //     set2 "var2" <- get1 "var1"
-        //     set3 "var1"
-        //     set4 "var3"
-        //     set5 "var1" <- get2 "var4"
-        //
-        // set6 "var1"
-        //
-        // get3 "var1"
-
-        // Expected state after deleting var1:
-        // Statement block with a statement input
-        //     set2 "var2"
-        //     set4 "var 3"
-        List<Block> rootBlocks = mController.getWorkspace().getRootBlocks();
-        assertEquals(3, rootBlocks.size());
-
-        mVariableCallback.whenOnDeleteCalled = true;
-        mVariableCallback.onDeleteVariable = null;
-        mController.requestDeleteVariable("var1");
-
-        assertEquals("var1", mVariableCallback.onDeleteVariable);
-        assertEquals(1, rootBlocks.size());
-
-        Block block = rootBlocks.get(0);
-        assertSame(block, statement);
-        block = block.getInputs().get(0).getConnectedBlock();
-        assertSame(block, set2);
-
-        block = block.getNextBlock();
-        assertSame(block, set4);
-
-        block = block.getNextBlock();
-        assertNull(block);
+                assertThat(finalName).isEqualTo(name);
+            }
+        });
     }
 
-    public void testLoadWorkspaceContents_andReset() {
+    @Test
+    public void testRenameVariableDoesNotChangeCase() {
+        runAndSync(new Runnable() {
+            @Override
+            public void run() {
+                String oldName = "oldName";
+                String newName = "TEST";
+
+                String finalName = mController.renameVariable(oldName, newName);
+
+                assertThat(finalName).isEqualTo(newName);
+            }
+        });
+    }
+
+    @Test
+    public void testCreateVariableDoesNotAllowDuplicateNamesWithDifferentCases() {
+        runAndSync(new Runnable() {
+            @Override
+            public void run() {
+                String name1 = "VAR";
+                String name2 = "var";
+
+                String finalName1 = mController.addVariable(name1);
+                String finalName2 = mController.addVariable(name2);
+
+                assertWithMessage("Second similar variable name (matching all but case) was renamed.")
+                        .that(finalName2).isNotEqualTo(name2);
+                assertWithMessage("Renamed second variable does not match first variable.")
+                        .that(finalName1.toLowerCase()).isNotEqualTo(finalName2.toLowerCase());
+            }
+        });
+    }
+
+    @Test
+    public void testRemoveVariable() throws BlockLoadingException {
+        configureForUIThread();
+
+        final Block set1 = mBlockFactory.obtainBlockFrom(
+                new BlockTemplate().ofType("set_variable").withId("first block"));
+        final Block set2 = mBlockFactory.obtainBlockFrom(
+                new BlockTemplate().ofType("set_variable").withId("second block"));
+        final Block set3 = mBlockFactory.obtainBlockFrom(
+                new BlockTemplate().ofType("set_variable").withId("third block"));
+        final Block set4 = mBlockFactory.obtainBlockFrom(
+                new BlockTemplate().ofType("set_variable").withId("fourth block"));
+        final Block set5 = mBlockFactory.obtainBlockFrom(
+                new BlockTemplate().ofType("set_variable").withId("fifth block"));
+        final Block set6 = mBlockFactory.obtainBlockFrom(
+                new BlockTemplate().ofType("set_variable").withId("sixth block"));
+        final Block statement = mBlockFactory.obtainBlockFrom(
+                new BlockTemplate().ofType("statement_statement_input").withId("statement block"));
+        final Block get1 = mBlockFactory.obtainBlockFrom(
+                new BlockTemplate().ofType("get_variable").withId("get1"));
+        final Block get2 = mBlockFactory.obtainBlockFrom(
+                new BlockTemplate().ofType("get_variable").withId("get2"));
+        final Block get3 = mBlockFactory.obtainBlockFrom(
+                new BlockTemplate().ofType("get_variable").withId("get3"));
+
+        runAndSync(new Runnable() {
+            @Override
+            public void run() {
+                mController.addVariable("var1");
+                mController.addVariable("var2");
+                mController.addVariable("var3");
+                mController.addVariable("var4");
+
+                mController.connect(statement.getInputs().get(0).getConnection(),
+                        set1.getPreviousConnection());
+                mController.connect(set1.getNextConnection(), set2.getPreviousConnection());
+                mController.connect(set2.getNextConnection(), set3.getPreviousConnection());
+                mController.connect(set3.getNextConnection(), set4.getPreviousConnection());
+                mController.connect(set4.getNextConnection(), set5.getPreviousConnection());
+                mController.connect(set2.getOnlyValueInput().getConnection(), get1.getOutputConnection());
+                mController.connect(set5.getOnlyValueInput().getConnection(), get2.getOutputConnection());
+
+                FieldVariable var = (FieldVariable) set1.getFieldByName("variable");
+                var.setVariable("var1");
+                var = (FieldVariable) set2.getFieldByName("variable");
+                var.setVariable("var2");
+                var = (FieldVariable) set3.getFieldByName("variable");
+                var.setVariable("var1");
+                var = (FieldVariable) set4.getFieldByName("variable");
+                var.setVariable("var3");
+                var = (FieldVariable) set5.getFieldByName("variable");
+                var.setVariable("var1");
+                var = (FieldVariable) set6.getFieldByName("variable");
+                var.setVariable("var1");
+                var = (FieldVariable) get1.getFieldByName("variable");
+                var.setVariable("var1");
+                var = (FieldVariable) get2.getFieldByName("variable");
+                var.setVariable("var4");
+                var = (FieldVariable) get3.getFieldByName("variable");
+                var.setVariable("var1");
+
+                mController.addRootBlock(statement);
+                mController.addRootBlock(set6);
+                mController.addRootBlock(get3);
+
+                // Workspace setup:
+                // Statement block with a statement input
+                //     set1 "var1"
+                //     set2 "var2" <- get1 "var1"
+                //     set3 "var1"
+                //     set4 "var3"
+                //     set5 "var1" <- get2 "var4"
+                //
+                // set6 "var1"
+                //
+                // get3 "var1"
+
+                // Expected state after deleting var1:
+                // Statement block with a statement input
+                //     set2 "var2"
+                //     set4 "var 3"
+                List<Block> rootBlocks = mController.getWorkspace().getRootBlocks();
+                assertThat(rootBlocks.size()).isEqualTo(3);
+
+                mVariableCallback.whenOnDeleteCalled = true;
+                mVariableCallback.onDeleteVariable = null;
+                mController.requestDeleteVariable("var1");
+
+                assertThat(mVariableCallback.onDeleteVariable).isEqualTo("var1");
+                assertThat(rootBlocks.size()).isEqualTo(1);
+
+                Block block = rootBlocks.get(0);
+                assertThat(block).isSameAs(statement);
+                block = block.getInputs().get(0).getConnectedBlock();
+                assertThat(block).isSameAs(set2);
+
+                block = block.getNextBlock();
+                assertThat(block).isSameAs(set4);
+
+                block = block.getNextBlock();
+                assertThat(block).isNull();
+            }
+        });
+    }
+
+    @Test
+    public void testLoadWorkspaceContents_andReset() throws BlockLoadingException {
         mController.initWorkspaceView(mWorkspaceView);
-        assertEquals(0, mWorkspace.getRootBlocks().size());
-        assertEquals(0, mWorkspaceView.getChildCount());
+        assertThat(mWorkspace.getRootBlocks()).hasSize(0);
+        assertThat(mWorkspaceView.getChildCount()).isEqualTo(0);
 
         mController.loadWorkspaceContents(
                 BlockTestStrings.EMPTY_BLOCK_WITH_POSITION +
                 BlockTestStrings.EMPTY_BLOCK_WITH_POSITION.replace(
                         BlockTestStrings.EMPTY_BLOCK_ID,
                         BlockTestStrings.EMPTY_BLOCK_ID + '2'));
-        assertEquals(2, mWorkspace.getRootBlocks().size());
-        assertEquals(2, mWorkspaceView.getChildCount());
+        assertThat(mWorkspace.getRootBlocks()).hasSize(2);
+        assertThat(mWorkspaceView.getChildCount()).isEqualTo(2);
 
         mController.resetWorkspace();
-        assertEquals(0, mWorkspace.getRootBlocks().size());
-        assertEquals(0, mWorkspaceView.getChildCount());
+        assertThat(mWorkspace.getRootBlocks()).hasSize(0);
+        assertThat(mWorkspaceView.getChildCount()).isEqualTo(0);
+    }
+
+    @Test
+    public void testLoadWorkspaceContents_andTrashAllBlocks() throws BlockLoadingException {
+        runAndSync(new Runnable() {
+            @Override
+            public void run() {
+                mController.initWorkspaceView(mWorkspaceView);
+                assertThat(mWorkspace.getRootBlocks()).hasSize(0);
+                assertThat(mWorkspace.getTrashCategory().getItems()).hasSize(0);
+
+                try {
+                    mController.loadWorkspaceContents(
+                            BlockTestStrings.EMPTY_BLOCK_WITH_POSITION +
+                                    BlockTestStrings.EMPTY_BLOCK_WITH_POSITION.replace(
+                                            BlockTestStrings.EMPTY_BLOCK_ID,
+                                            BlockTestStrings.EMPTY_BLOCK_ID + '2'));
+                } catch (BlockLoadingException e) {
+                    throw new IllegalStateException(e);  // Throw as RuntimeException.
+                }
+                assertThat(mWorkspace.getRootBlocks()).hasSize(2);
+                assertThat(mWorkspace.getTrashCategory().getItems()).hasSize(0);
+
+                mController.trashAllBlocks();
+                assertThat(mWorkspace.getRootBlocks()).hasSize(0);
+                assertThat(mWorkspace.getTrashCategory().getItems()).hasSize(2);
+            }
+        });
+    }
+
+    @Test
+    public void testTrashAllBlocksSetsWorkspaceId() throws BlockLoadingException {
+        // given
+        final Block block = mBlockFactory.obtainBlockFrom(
+            new BlockTemplate().ofType("simple_input_output").withId("connectTarget"));
+        final String expectedWorkspaceId = BlocklyEvent.WORKSPACE_ID_TRASH;
+
+        runAndSync(new Runnable() {
+            @Override
+            public void run() {
+                // when
+                mController.addRootBlock(block);
+                mController.trashAllBlocks();
+
+                // then
+                assertThat(block.getEventWorkspaceId()).isEqualTo(expectedWorkspaceId);
+            }
+        });
+    }
+
+    @Test
+    public void testRemoveBlockTreeSetsWorkspaceId() throws BlockLoadingException {
+        // given
+        final Block block = mBlockFactory.obtainBlockFrom(
+            new BlockTemplate().ofType("simple_input_output").withId("connectTarget"));
+
+        // when
+        runAndSync(new Runnable() {
+           @Override
+           public void run() {
+                mController.addRootBlock(block);
+                mController.removeBlockTree(block);
+
+                // then
+                assertThat(block.getEventWorkspaceId()).isNull();
+           }
+        });
     }
 
     /**
@@ -1276,7 +1705,7 @@ public class BlocklyControllerTest extends MockitoAndroidTestCase {
         }
     }
 
-    private static class MockVariableCallback extends BlocklyController.VariableCallback {
+    private static class StubVariableCallback extends BlocklyController.VariableCallback {
         String onDeleteVariable = null;
         String onCreateVariable = null;
         String onRenameVariable = null;
@@ -1286,7 +1715,7 @@ public class BlocklyControllerTest extends MockitoAndroidTestCase {
         boolean whenOnRenameCalled = true;
 
         @Override
-        public boolean onDeleteVariable(String variable) {
+        public boolean onDeleteVariable(String variable,  VariableInfo info) {
             onDeleteVariable = variable;
             return whenOnDeleteCalled;
         }
@@ -1301,6 +1730,11 @@ public class BlocklyControllerTest extends MockitoAndroidTestCase {
         public boolean onRenameVariable(String variable, String newVariable) {
             onRenameVariable = variable;
             return whenOnRenameCalled;
+        }
+
+        @Override
+        public void onAlertCannotDeleteProcedureArgument(String variableName, VariableInfo info) {
+            // Do nothing
         }
 
         public void reset() {

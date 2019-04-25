@@ -21,6 +21,7 @@ import android.support.annotation.Nullable;
 import android.text.TextUtils;
 
 import com.google.blockly.utils.BlockLoadingException;
+import com.google.blockly.utils.LangUtils;
 
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -33,7 +34,7 @@ import java.util.List;
 /**
  * Adds a dropdown list to an Input.
  */
-public final class FieldDropdown extends Field<FieldDropdown.Observer> {
+public final class FieldDropdown extends Field {
     private static final String TAG = "FieldDropdown";
 
     /**
@@ -214,7 +215,7 @@ public final class FieldDropdown extends Field<FieldDropdown.Observer> {
                 }
                 if (option != null && option.length() == 2) {
                     try {
-                        String displayName = option.getString(0);
+                        String displayName = LangUtils.interpolate(option.getString(0));
                         String value = option.getString(1);
                         if (TextUtils.isEmpty(value)) {
                             throw new BlockLoadingException("Option values may not be empty");
@@ -305,10 +306,10 @@ public final class FieldDropdown extends Field<FieldDropdown.Observer> {
      */
     public void setSelectedValue(String newValue) {
         if (mOptions.isEmpty()) {
-            int oldIndex = mSelectedIndex;
+            String oldValue = getSerializedValue();
             mSelectedIndex = -1;
             mSelectedOption = null;
-            onSelectionChanged(this, oldIndex, mSelectedIndex);
+            fireValueChanged(oldValue, null);
         } else {
             int index = mOptions.getIndexForValue(newValue);
             if (index == -1) {
@@ -346,10 +347,11 @@ public final class FieldDropdown extends Field<FieldDropdown.Observer> {
         // If value selected index has changed, update current selection and (if it exists) let
         // the observers know.
         if (mSelectedIndex != index) {
-            int oldIndex = mSelectedIndex;
+            String oldValue = getSerializedValue();
             mSelectedIndex = index;
             mSelectedOption = mOptions.get(mSelectedIndex);
-            onSelectionChanged(this, oldIndex, index);
+            String newValue = getSerializedValue();
+            fireValueChanged(oldValue, newValue);
         }
     }
 
@@ -370,25 +372,5 @@ public final class FieldDropdown extends Field<FieldDropdown.Observer> {
     @Override
     public String getSerializedValue() {
         return getSelectedValue();
-    }
-
-    private void onSelectionChanged(FieldDropdown field, int oldIndex, int newIndex) {
-        for (int i = 0; i < mObservers.size(); i++) {
-            mObservers.get(i).onSelectionChanged(field, oldIndex, newIndex);
-        }
-    }
-
-    /**
-     * Observer for listening to changes to a variable field.
-     */
-    public interface Observer {
-        /**
-         * Called when the field's selected index changed.
-         *
-         * @param field The field that changed.
-         * @param oldIndex The field's previously selected index.
-         * @param newIndex The field's new selected index.
-         */
-        void onSelectionChanged(FieldDropdown field, int oldIndex, int newIndex);
     }
 }

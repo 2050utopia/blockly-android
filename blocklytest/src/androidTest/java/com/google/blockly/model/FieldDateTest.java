@@ -14,37 +14,70 @@
  */
 package com.google.blockly.model;
 
-import android.test.AndroidTestCase;
+import org.junit.Before;
+import org.junit.Test;
 
 import java.util.Date;
+
+import static com.google.common.truth.Truth.assertThat;
 
 /**
  * Tests for {@link FieldDate}.
  */
-public class FieldDateTest extends AndroidTestCase {
-    public void testFieldDate() {
-        FieldDate field = new FieldDate("alphabet", "2015-09-14");
-        assertEquals(Field.TYPE_DATE, field.getType());
-        assertEquals("alphabet", field.getName());
-        assertEquals("2015-09-14", field.getDateString());
+public class FieldDateTest {
+    private static final String INITIAL_VALUE = "2015-09-14";
 
+    FieldDate mField;
+
+    @Before
+    public void setUp() {
+        mField = new FieldDate("alphabet", INITIAL_VALUE);
+    }
+
+    @Test
+    public void testConstructor() {
+        assertThat(mField.getType()).isEqualTo(Field.TYPE_DATE);
+        assertThat(mField.getName()).isEqualTo("alphabet");
+        assertThat(mField.getSerializedValue()).isEqualTo(INITIAL_VALUE);
+    }
+
+    @Test
+    public void testSetDate() {
         Date date = new Date();
-        field.setDate(date);
-        assertEquals(date, field.getDate());
+        mField.setDate(date);
+        assertThat(mField.getDate()).isEqualTo(date);
         date.setTime(date.getTime() + 86400000);
-        field.setTime(date.getTime());
-        assertEquals(date, field.getDate());
+        mField.setTime(date.getTime());
+        assertThat(mField.getDate()).isEqualTo(date);
 
-        assertTrue(field.setFromString("2017-03-23"));
-        assertEquals("2017-03-23", field.getDateString());
+        assertThat(mField.setFromString("2017-03-23")).isTrue();
+        assertThat(mField.getLocalizedDateString()).isEqualTo("2017-03-23");
+    }
 
-        // xml parsing
-        assertFalse(field.setFromString("today"));
-        assertFalse(field.setFromString("2017/03/03"));
-        assertFalse(field.setFromString(""));
+    @Test
+    public void testSetFromString() {
+        assertThat(mField.setFromString("today")).isFalse();
+        assertThat(mField.setFromString("2017/03/03")).isFalse();
+        assertThat(mField.setFromString("")).isFalse();
+    }
 
-        FieldDate clone = field.clone();
-        assertNotSame(field, clone);
-        assertNotSame(field.getDate(), clone.getDate());
+    @Test
+    public void testClone() {
+        FieldDate clone = mField.clone();
+        assertThat(mField).isNotSameAs(clone);
+        assertThat(clone.getName()).isEqualTo(mField.getName());
+        assertThat(mField.getDate()).isNotSameAs(clone.getDate());
+        assertThat(clone.getDate()).isEqualTo(mField.getDate());
+    }
+
+    @Test
+    public void testObserverEvents() {
+        FieldTestHelper.testObserverEvent(mField,
+                /* New value */ "2017-03-23",
+                /* Expected old value */ INITIAL_VALUE,
+                /* Expected new value */ "2017-03-23");
+
+        // No events if no change
+        FieldTestHelper.testObserverNoEvent(mField);
     }
 }

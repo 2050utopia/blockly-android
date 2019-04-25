@@ -15,24 +15,23 @@
 
 package com.google.blockly.android.ui.fieldview;
 
-import android.content.ClipDescription;
 import android.content.Context;
+import android.support.v7.widget.AppCompatEditText;
 import android.text.Editable;
 import android.text.TextUtils;
 import android.text.TextWatcher;
 import android.util.AttributeSet;
 import android.util.Log;
 import android.view.DragEvent;
-import android.widget.EditText;
 
-import com.google.blockly.android.ui.WorkspaceView;
+import com.google.blockly.android.ui.WorkspaceHelper;
 import com.google.blockly.model.Field;
 import com.google.blockly.model.FieldInput;
 
 /**
  * Renders editable text as part of a {@link com.google.blockly.android.ui.InputView}.
  */
-public class BasicFieldInputView extends EditText implements FieldView {
+public class BasicFieldInputView extends AppCompatEditText implements FieldView {
     private static final String TAG = "BasicFieldInputView";
 
     private final TextWatcher mWatcher = new TextWatcher() {
@@ -50,15 +49,15 @@ public class BasicFieldInputView extends EditText implements FieldView {
         }
     };
 
-    private final FieldInput.Observer mFieldObserver = new FieldInput.Observer() {
+    private final Field.Observer mFieldObserver = new Field.Observer() {
         @Override
-        public void onTextChanged(FieldInput field, String oldText, String newText) {
+        public void onValueChanged(Field field, String oldValue, String newValue) {
             if (field != mInputField) {
                 Log.w(TAG, "Received text change from unexpected field.");
                 return;
             }
-            if (!TextUtils.equals(newText, getText())) {
-                setText(newText);
+            if (!TextUtils.equals(newValue, getText())) {
+                setText(newValue);
             }
         }
     };
@@ -120,13 +119,9 @@ public class BasicFieldInputView extends EditText implements FieldView {
     @Override
     public boolean onDragEvent(DragEvent event) {
         // Don't let block groups be dropped into text fields.
-        if (event.getClipDescription() != null
-            && event.getClipDescription().hasMimeType(ClipDescription.MIMETYPE_TEXT_PLAIN)
-            && event.getClipDescription().getLabel().equals(
-                WorkspaceView.BLOCK_GROUP_CLIP_DATA_LABEL)) {
+        if (WorkspaceHelper.isBlockDrag(getContext(), event)) {
             return false;
         }
-
         return super.onDragEvent(event);
     }
 

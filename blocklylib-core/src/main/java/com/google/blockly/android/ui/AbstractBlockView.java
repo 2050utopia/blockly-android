@@ -22,7 +22,6 @@ import android.graphics.Color;
 import android.graphics.Paint;
 import android.support.annotation.Nullable;
 import android.support.annotation.Size;
-import android.support.v4.view.MotionEventCompat;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
@@ -34,6 +33,7 @@ import com.google.blockly.model.Connection;
 import com.google.blockly.model.Input;
 import com.google.blockly.model.WorkspacePoint;
 
+import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -42,7 +42,7 @@ import java.util.List;
  * {@link InputView}s are direct children, and handles most UI events and view hierarchy
  * coordination. The measurement, placement and drawing are left to the subclass to implement.
  */
-@SuppressLint("ViewConstructor")
+@SuppressLint("ViewConstructor")  // BlockViews should not be instantiated by layout XML.
 public abstract class AbstractBlockView<InputView extends com.google.blockly.android.ui.InputView>
         extends NonPropagatingViewGroup implements BlockView {
     protected final WorkspaceHelper mHelper;
@@ -53,6 +53,8 @@ public abstract class AbstractBlockView<InputView extends com.google.blockly.and
 
     // Child views for the block inputs and their children.
     protected final ArrayList<InputView> mInputViews;
+    // View containing icons for the block, including mutate, warning, and comment icons.
+    protected View mIconsView;
 
     protected WorkspaceView mWorkspaceView;
 
@@ -75,8 +77,13 @@ public abstract class AbstractBlockView<InputView extends com.google.blockly.and
     protected final ViewPoint mTempConnectionPosition = new ViewPoint();
     protected final WorkspacePoint mTempWorkspacePoint = new WorkspacePoint();
 
+    // Keeps track of if the current set of touch events had started on this block
+    private boolean mHasHit = false;
+
     // Currently highlighted connection.
     @Nullable protected Connection mHighlightedConnection = null;
+
+    private final MemorySafeBlockObserver mBlockObserver = new MemorySafeBlockObserver(this);
 
     /**
      * Creates a BlockView for the given {@link Block}.
@@ -121,6 +128,8 @@ public abstract class AbstractBlockView<InputView extends com.google.blockly.and
             }
         }
         addInputViewsToViewHierarchy();
+
+        block.registerObserver(mBlockObserver);
     }
 
     /**
@@ -131,6 +140,26 @@ public abstract class AbstractBlockView<InputView extends com.google.blockly.and
         for (int i = 0; i < mInputViews.size(); ++i) {
             addView((View) mInputViews.get(i));
         }
+    }
+
+    /**
+     * Sets a view containing one or more icons for the block, such as the mutate or warning icons.
+     * The view will be added to the view hierarchy, though the concrete BlockView implementation is
+     * responsible for deciding how the icons are laid out and drawn.
+     *
+     * @param iconsView The view containing any icons that are part of this block or null.
+     */
+    public void setIconsView(@Nullable View iconsView) {
+        if (iconsView == mIconsView) {
+            return;
+        }
+        if (mIconsView != null) {
+            removeView(mIconsView);
+        }
+        if (iconsView != null) {
+            addView(iconsView);
+        }
+        mIconsView = iconsView;
     }
 
     /**
@@ -201,6 +230,22 @@ public abstract class AbstractBlockView<InputView extends com.google.blockly.and
     @Override
     public WorkspaceView getWorkspaceView() {
         return mWorkspaceView;
+    }
+
+    /**
+     * @return The ConnectionManager managing the connections of this view.
+     */
+    @Override
+    public ConnectionManager getConnectionManager() {
+        return mConnectionManager;
+    }
+
+    /**
+     * @return The touch handler for handling the touch and drag events for this view.
+     */
+    @Override
+    public BlockTouchHandler getTouchHandler() {
+        return mTouchHandler;
     }
 
     /**
@@ -277,6 +322,7 @@ public abstract class AbstractBlockView<InputView extends com.google.blockly.and
      */
     // TODO(#146): Move tree traversal to BlockViewFactory.unregisterView(..)
     public void unlinkModel() {
+        mBlock.unregisterObserver(mBlockObserver);
         mFactory.unregisterView(this); // TODO(#137): factory -> ViewPool
 
         int max = mInputViews.size();
@@ -306,11 +352,10 @@ public abstract class AbstractBlockView<InputView extends com.google.blockly.and
 
     @Override
     public void getTouchLocationOnScreen(MotionEvent event, @Size(2) int[] locationOut) {
-        int pointerId =
-                MotionEventCompat.getPointerId(event, MotionEventCompat.getActionIndex(event));
-        int pointerIdx = MotionEventCompat.findPointerIndex(event, pointerId);
-        float offsetX =  MotionEventCompat.getX(event, pointerIdx);
-        float offsetY = MotionEventCompat.getY(event, pointerIdx);
+        int pointerId = event.getPointerId(event.getActionIndex());
+        int pointerIdx = event.findPointerIndex(pointerId);
+        float offsetX =  event.getX(pointerIdx);
+        float offsetY = event.getY(pointerIdx);
 
         // Get local screen coordinates.
         getLocationOnScreen(locationOut);
@@ -339,7 +384,7 @@ public abstract class AbstractBlockView<InputView extends com.google.blockly.and
                 mWorkspaceView = (WorkspaceView) parent;
                 return;
             }
-            parent = ((ViewGroup) parent).getParent();
+            parent = parent.getParent();
         }
     }
 
@@ -360,8 +405,15 @@ public abstract class AbstractBlockView<InputView extends com.google.blockly.and
     }
 
     /**
-     * Test whether a {@link MotionEvent} event is (approximately) hitting a visible part of this
-     * view.
+     * Called when the underlying block has been updated. The view implementation should override
+     * this method to appropriately update the view to reflect the new state.
+     * @param updateMask A bit mask denoting {@link Block.UpdateState} changes.
+     */
+    protected abstract void onBlockUpdated(@Block.UpdateState int updateMask);
+
+    /**
+     * Test whether a {@link MotionEvent} event that has happened on this view is (approximately)
+     * hitting a visible part of this view.
      * <p/>
      * This is used to determine whether the event should be handled by this view, e.g., to activate
      * dragging or to open a context menu. Since the actual block interactions are implemented at
@@ -372,7 +424,36 @@ public abstract class AbstractBlockView<InputView extends com.google.blockly.and
      * @return True if the coordinate of the motion event is on the visible, non-transparent part of
      * this view; false otherwise.
      */
-    protected abstract boolean hitTest(MotionEvent event);
+    protected boolean hitTest(MotionEvent event) {
+        int action = event.getAction();
+
+        if (mHasHit && action == MotionEvent.ACTION_MOVE) {
+            // Action started on the block.
+            return true;
+        }
+
+        if (action == MotionEvent.ACTION_CANCEL || action == MotionEvent.ACTION_UP) {
+            // Action has finished
+            boolean wasHit = mHasHit;
+            mHasHit = false;
+            return wasHit;
+        }
+
+        final int eventX = (int) event.getX();
+        final int eventY = (int) event.getY();
+
+        mHasHit = coordinatesAreOnBlock(eventX, eventY);
+        return mHasHit;
+    }
+
+    /**
+     * Checks if the coordinates (relative to this view) exist on a visible part of this view.
+     *
+     * @param x the x coordinate relative to this view.
+     * @param y the y coordinate relative to this view.
+     * @return true if the coordinates are on a visible part of this view.
+     */
+    protected abstract boolean coordinatesAreOnBlock(int x, int y);
 
     /**
      * This is a developer testing function subclasses can call to draw dots at the model's location
@@ -428,6 +509,23 @@ public abstract class AbstractBlockView<InputView extends com.google.blockly.and
                 && mBlock.getOutputConnection().getTargetBlock() != null)) {
             mHelper.getWorkspaceCoordinates(this, mTempWorkspacePoint);
             mBlock.setPosition(mTempWorkspacePoint.x, mTempWorkspacePoint.y);
+        }
+    }
+
+    private static final class MemorySafeBlockObserver implements Block.Observer {
+        private final WeakReference<AbstractBlockView> mViewRef;
+        public MemorySafeBlockObserver(AbstractBlockView viewRef) {
+            mViewRef = new WeakReference<>(viewRef);
+        }
+
+        @Override
+        public void onBlockUpdated(Block block, @Block.UpdateState int updateMask) {
+            AbstractBlockView view = mViewRef.get();
+            if (view == null || view.mBlock != block) {
+                block.unregisterObserver(this);
+            } else {
+                view.onBlockUpdated(updateMask);
+            }
         }
     }
 }

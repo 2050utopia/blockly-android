@@ -17,12 +17,9 @@ package com.google.blockly.model;
 
 import android.database.Observable;
 import android.support.annotation.IntDef;
-import android.util.Log;
 
-import com.google.blockly.utils.BlockLoadingException;
+import com.google.blockly.model.BlocklyEvent.ChangeEvent;
 
-import org.json.JSONException;
-import org.json.JSONObject;
 import org.xmlpull.v1.XmlSerializer;
 
 import java.io.IOException;
@@ -33,8 +30,11 @@ import java.lang.annotation.RetentionPolicy;
  * The base class for Fields in Blockly. A field is the smallest piece of a {@link Block} and is
  * wrapped by an {@link Input}.
  */
-public abstract class Field<T> extends Observable<T> implements Cloneable {
+public abstract class Field extends Observable<Field.Observer> implements Cloneable {
     private static final String TAG = "Field";
+
+    // TODO: These FieldTypes are not extensible without editing this file. It should be possible
+    //       to add a new field type by extending BlockFactory and BlockViewFactory.
     public static final int TYPE_UNKNOWN = -1;
     public static final int TYPE_LABEL = 0;
     public static final int TYPE_INPUT = 1;
@@ -63,6 +63,21 @@ public abstract class Field<T> extends Observable<T> implements Cloneable {
     public static final String TYPE_DROPDOWN_STRING = "field_dropdown";
     public static final String TYPE_IMAGE_STRING = "field_image";
     public static final String TYPE_NUMBER_STRING = "field_number";
+    // Icon fields are not explicitly declared, so they have no string representation
+
+    /**
+     * Observer for listening to changes to a field.
+     */
+    public interface Observer {
+        /**
+         * Called when the field's text changed.
+         *
+         * @param field The field that changed.
+         * @param oldValue The field's previous value, in serialized string form.
+         * @param newValue The field's new value, in serialized string form.
+         */
+        void onValueChanged(Field field, String oldValue, String newValue);
+    }
 
     private final String mName;
     private final int mType;
@@ -143,6 +158,12 @@ public abstract class Field<T> extends Observable<T> implements Cloneable {
      * @param block The parent block for this field.
      */
     protected void setBlock(Block block) {
+        if (block == mBlock) {
+            return;
+        }
+        if (block != null && mBlock != null) {
+            throw new IllegalStateException("Field is already a member of another block.");
+        }
         mBlock = block;
     }
 
@@ -196,6 +217,41 @@ public abstract class Field<T> extends Observable<T> implements Cloneable {
                 return TYPE_NUMBER;
             default:
                 return TYPE_UNKNOWN;
+        }
+    }
+
+    /**
+     * Triggers events (both {@link ChangeEvent}s and {@link Observer}s) in response to a value
+     * change. If the field is attached to a event workspace (workspace, toolbox, or trash), must be
+     * called on the main thread.
+     *
+     * @param oldValueString Old value in serialized string form.
+     * @param newValueString New value in serialized string form.
+     */
+    protected void fireValueChanged(final String oldValueString, final String newValueString) {
+        runAsPossibleEventGroup(new Runnable() {
+            @Override
+            public void run() {
+                if (mBlock != null) {
+                    mBlock.maybeAddPendingChangeEvent(
+                            BlocklyEvent.ELEMENT_FIELD, Field.this, oldValueString, newValueString);
+                }
+                for (int i = 0; i < mObservers.size(); i++) {
+                    mObservers.get(i).onValueChanged(Field.this, oldValueString, newValueString);
+                }
+            }
+        });
+    }
+
+    /**
+     * Runs the runnable immediately, as an event group if connected to a block & controller.
+     * @param runnable
+     */
+    private void runAsPossibleEventGroup(Runnable runnable) {
+        if (mBlock != null) {
+            mBlock.runAsPossibleEventGroup(runnable);
+        } else {
+            runnable.run();
         }
     }
 }

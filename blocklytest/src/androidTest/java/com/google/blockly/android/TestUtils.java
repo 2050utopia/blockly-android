@@ -15,33 +15,43 @@
 
 package com.google.blockly.android;
 
+import android.content.Context;
 import android.view.View;
 import android.view.ViewGroup;
 
+import com.google.blockly.android.control.BlocklyController;
 import com.google.blockly.android.control.ConnectionManager;
 import com.google.blockly.android.ui.BlockView;
 import com.google.blockly.android.ui.BlockViewFactory;
+import com.google.blockly.android.ui.MutatorFragment;
 import com.google.blockly.android.ui.WorkspaceView;
 import com.google.blockly.android.ui.fieldview.FieldView;
 import com.google.blockly.model.Block;
+import com.google.blockly.model.BlockFactory;
+import com.google.blockly.model.DefaultBlocks;
 import com.google.blockly.model.Field;
+import com.google.blockly.model.Mutator;
+import com.google.blockly.utils.BlockLoadingException;
 
+import java.io.IOException;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Utils for setting up blocks during testing.
  */
 public final class TestUtils {
 
-    private TestUtils() {}
+    private TestUtils() {
+    }
 
     /**
      * Create views for the given blocks and add them to the workspace given by the combination
      * of connection manager, helper, and view.
      */
     public static void createViews(List<Block> blocks, BlockViewFactory viewFactory,
-            ConnectionManager connectionManager, WorkspaceView workspaceView) {
-
+                                   ConnectionManager connectionManager, WorkspaceView workspaceView)
+    {
         // Create views for all of the blocks we're interested in.
         for (int i = 0; i < blocks.size(); i++) {
             workspaceView.addView(
@@ -54,7 +64,7 @@ public final class TestUtils {
      * subblocks and related subviews.
      *
      * @param blockView The view for {@code field}'s parent {@link Block}.
-     * @param field The field to find a {@link FieldView}.
+     * @param field     The field to find a {@link FieldView}.
      * @return The {@link View} / {@link FieldView} for {@code field}, or null if not found.
      */
     public static View getFieldView(BlockView blockView, Field field) {
@@ -85,4 +95,37 @@ public final class TestUtils {
         }
         return null;  // Not found.
     }
+
+    /**
+     * Loads the block definitions, mutators, and mutator UIs associated with procedure blocks.
+     */
+    public static void loadProcedureBlocks(BlocklyController controller) {
+        Context context = controller.getContext();
+        BlockFactory blockFactory = controller.getBlockFactory();
+        BlockViewFactory viewFactory = controller.getWorkspaceHelper().getBlockViewFactory();
+
+        try {
+            blockFactory.addJsonDefinitions(context.getAssets().open(
+                    DefaultBlocks.PROCEDURE_BLOCKS_PATH));
+        } catch (IOException|BlockLoadingException e) {
+            throw new IllegalStateException("Unable to load procedure blocks.", e);
+        }
+
+        Map<String, Mutator.Factory> mutators = DefaultBlocks.getMutators();
+        for (String mutatorId : mutators.keySet()) {
+            if (mutatorId.startsWith("procedures_")) {
+                blockFactory.registerMutator(mutatorId, mutators.get(mutatorId));
+            }
+        }
+
+        if (viewFactory != null) {
+            Map<String, MutatorFragment.Factory> mutatorUis = DefaultBlocks.getMutatorUis();
+            for (String mutatorId : mutatorUis.keySet()) {
+                if (mutatorId.startsWith("procedures_")) {
+                    viewFactory.registerMutatorUi(mutatorId, mutatorUis.get(mutatorId));
+                }
+            }
+        }
+    }
+
 }

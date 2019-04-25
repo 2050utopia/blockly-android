@@ -13,7 +13,7 @@
   ~  limitations under the License.
   -->
 
-<xml xmlns="http://www.w3.org/1999/xhtml">
+<toolbox>
     <category name="Some blocks">
         <category name="Subcategory">
             <block type="simple_input_output"></block>
@@ -22,11 +22,12 @@
             <block type="statement_statement_input"></block>
             <block type="statement_value_input"></block>
         </category>
+        <block type="styled_event_cap"></block>
         <block type="statement_no_input"></block>
         <block type="output_no_input"></block>
         <block type="statement_no_next"></block>
     </category>
-    <category name="Outputs">
+    <category name="Loops">
         <block type="controls_repeat_ext">
             <value name="TIMES">
                 <shadow type="math_number">
@@ -37,11 +38,6 @@
         <block type="controls_whileUntil">
             <field name="MODE">UNTIL</field>
         </block>
-        <block type="simple_input_output"></block>
-        <block type="multiple_input_output"></block>
-        <block type="statement_multiple_value_input"></block>
-        <block type="statement_statement_input"></block>
-        <block type="statement_value_input"></block>
     </category>
     <category name="Groups">
         <block type="statement_no_input">
@@ -126,8 +122,29 @@
             <field name="NOTE">60</field>
         </block>
     </category>
-    <category name="Variables" custom="VARIABLE">
-        <block type="variables_set"></block>
-        <block type="variables_get"></block>
+    <category name="Images 1">
+        <block type="image-relative"/>
+        <block type="image-fileuri"/>
+        <block type="image-datauri"/>
+        <block type="image-small"/>
+        <block type="image-large"/>
+        <block type="image-missing"/>
     </category>
-</xml>
+    <category name="Images 2">
+        <block type="test_with_lots_of_network_icons"/>
+        <block type="test_with_lots_of_network_icons"/>
+        <block type="test_with_lots_of_network_icons"/>
+        <block type="test_with_lots_of_network_icons"/>
+    </category>
+    <category name="Colors">
+        <block type="block_color_hex1"/>
+        <block type="block_color_hex2"/>
+        <block type="block_color_hex3"/>
+        <label text="Bad examples"></label>
+        <block type="block_no_color"/>
+        <block type="block_color_hex4"/>
+        <block type="block_color_hex5"/>
+    </category>
+    <category name="Variables" custom="VARIABLE"/>
+    <category name="Functions" custom="FUNCTIONS"/>
+</toolbox>

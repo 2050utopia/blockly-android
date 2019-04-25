@@ -14,26 +14,35 @@
  */
 package com.google.blockly.model;
 
-import android.test.AndroidTestCase;
+import org.junit.Before;
+import org.junit.Rule;
+import org.junit.Test;
+import org.junit.rules.ExpectedException;
 
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 
+import static com.google.common.truth.Truth.assertThat;
+
 /**
  * Tests for {@link FieldDropdown}.
  */
-public class FieldDropdownTest extends AndroidTestCase {
+public class FieldDropdownTest {
     private final String FIELD_NAME = "FieldDropdown";
     private final List<String> VALUES = Collections.unmodifiableList(
             Arrays.asList("Value1", "Value2", "Value3"));
     private final List<String> LABELS = Collections.unmodifiableList(
             Arrays.asList("Label1", "Label2", "Label3"));
 
-    FieldDropdown.Options mOptions;
-    FieldDropdown mDropDown;
+    private FieldDropdown.Options mOptions;
+    private FieldDropdown mDropDown;
 
+    @Rule
+    public ExpectedException thrown = ExpectedException.none();
+
+    @Before
     public void setUp() {
         List<FieldDropdown.Option> optionList = new ArrayList<>(VALUES.size());
         for (int i = 0; i < VALUES.size(); ++i) {
@@ -44,76 +53,77 @@ public class FieldDropdownTest extends AndroidTestCase {
         mDropDown = new FieldDropdown(FIELD_NAME, mOptions);
     }
 
+    @Test
     public void testOptionsConstructorFromStrings() {
         // Created above.
-        assertEquals(VALUES.size(), mOptions.size());
+        assertThat(mOptions.size()).isEqualTo(VALUES.size());
         for (int i = 0; i < mOptions.size(); ++i) {
             FieldDropdown.Option option = mOptions.get(i);
-            assertEquals(VALUES.get(i), option.value);
-            assertEquals(LABELS.get(i), option.displayName);
+            assertThat(option.value).isEqualTo(VALUES.get(i));
+            assertThat(option.displayName).isEqualTo(LABELS.get(i));
         }
     }
 
+    @Test
     public void testDropdownConstructor() {
-        assertEquals(Field.TYPE_DROPDOWN, mDropDown.getType());
-        assertEquals(FIELD_NAME, mDropDown.getName());
-        assertEquals(0, mDropDown.getSelectedIndex());
-        assertEquals(VALUES.size(), mDropDown.getOptions().size());
+        assertThat(mDropDown.getType()).isEqualTo(Field.TYPE_DROPDOWN);
+        assertThat(mDropDown.getName()).isEqualTo(FIELD_NAME);
+        assertThat(mDropDown.getSelectedIndex()).isEqualTo(0);
+        assertThat(mDropDown.getOptions().size()).isEqualTo(VALUES.size());
 
         // The options may be shared, so identity
-        assertSame(mOptions, mDropDown.getOptions());
+        assertThat(mOptions).isSameAs(mDropDown.getOptions());
     }
 
+    @Test
     public void testSelectedByIndex() {
         for (int i = 0; i < VALUES.size(); i++) {
             mDropDown.setSelectedIndex(i);
-            assertEquals(i, mDropDown.getSelectedIndex());
-            assertEquals(VALUES.get(i), mDropDown.getSelectedValue());
-            assertEquals(VALUES.get(i), mDropDown.getSerializedValue());
-            assertEquals(LABELS.get(i), mDropDown.getSelectedDisplayName());
+            assertThat(mDropDown.getSelectedIndex()).isEqualTo(i);
+            assertThat(mDropDown.getSelectedValue()).isEqualTo(VALUES.get(i));
+            assertThat(mDropDown.getSerializedValue()).isEqualTo(VALUES.get(i));
+            assertThat(mDropDown.getSelectedDisplayName()).isEqualTo(LABELS.get(i));
         }
 
-        try {
-            // test setting out of bounds
-            mDropDown.setSelectedIndex(VALUES.size() + 1);
-            fail("Setting an out-of-bounds index should throw an exception.");
-        } catch (IllegalArgumentException e) {
-            //expected
-        }
+        thrown.expect(IllegalArgumentException.class);
+        mDropDown.setSelectedIndex(VALUES.size() + 1);
     }
 
+    @Test
     public void testSetSelectedByValue() {
         // Change initial value
         mDropDown.setSelectedIndex(VALUES.size() - 1);
 
         for (int i = 0; i < VALUES.size(); ++i) {
             mDropDown.setSelectedValue(VALUES.get(i));
-            assertEquals(i, mDropDown.getSelectedIndex());
-            assertEquals(VALUES.get(i), mDropDown.getSelectedValue());
-            assertEquals(VALUES.get(i), mDropDown.getSerializedValue());
-            assertEquals(LABELS.get(i), mDropDown.getSelectedDisplayName());
+            assertThat(mDropDown.getSelectedIndex()).isEqualTo(i);
+            assertThat(mDropDown.getSelectedValue()).isEqualTo(VALUES.get(i));
+            assertThat(mDropDown.getSerializedValue()).isEqualTo(VALUES.get(i));
+            assertThat(mDropDown.getSelectedDisplayName()).isEqualTo(LABELS.get(i));
         }
 
         // setting a non-existent value defaults to 0
         mDropDown.setSelectedValue("bad value");
-        assertEquals(0, mDropDown.getSelectedIndex());
-        assertEquals(LABELS.get(0), mDropDown.getSelectedDisplayName());
-        assertEquals(VALUES.get(0), mDropDown.getSerializedValue());
+        assertThat(mDropDown.getSelectedIndex()).isEqualTo(0);
+        assertThat(mDropDown.getSelectedDisplayName()).isEqualTo(LABELS.get(0));
+        assertThat(mDropDown.getSerializedValue()).isEqualTo(VALUES.get(0));
     }
 
+    @Test
     public void testSetFromString() {
-        assertTrue(mDropDown.setFromString(VALUES.get(1)));
-        assertEquals(1, mDropDown.getSelectedIndex());
-        assertEquals(LABELS.get(1), mDropDown.getSelectedDisplayName());
-        assertEquals(VALUES.get(1), mDropDown.getSerializedValue());
+        assertThat(mDropDown.setFromString(VALUES.get(1))).isTrue();
+        assertThat(mDropDown.getSelectedIndex()).isEqualTo(1);
+        assertThat(mDropDown.getSelectedDisplayName()).isEqualTo(LABELS.get(1));
+        assertThat(mDropDown.getSerializedValue()).isEqualTo(VALUES.get(1));
 
         // Setting a non-existent value defaults to 0
         mDropDown.setSelectedValue("bad value");
-        assertEquals(0, mDropDown.getSelectedIndex());
-        assertEquals(LABELS.get(0), mDropDown.getSelectedDisplayName());
-        assertEquals(VALUES.get(0), mDropDown.getSerializedValue());
+        assertThat(mDropDown.getSelectedIndex()).isEqualTo(0);
+        assertThat(mDropDown.getSelectedDisplayName()).isEqualTo(LABELS.get(0));
+        assertThat(mDropDown.getSerializedValue()).isEqualTo(VALUES.get(0));
     }
 
+    @Test
     public void testUpdateOptionsWithMatch() {
         // Initialize to something other than 0;
         mDropDown.setSelectedIndex(VALUES.size() / 2);
@@ -130,10 +140,11 @@ public class FieldDropdownTest extends AndroidTestCase {
         );
         mDropDown.getOptions().updateOptions(newOptions);
 
-        assertEquals(oldSelectedIndex + 1, mDropDown.getSelectedIndex());
-        assertEquals(oldSelectedValue, mDropDown.getSelectedValue());
+        assertThat(mDropDown.getSelectedIndex()).isEqualTo(oldSelectedIndex + 1);
+        assertThat(mDropDown.getSelectedValue()).isEqualTo(oldSelectedValue);
     }
 
+    @Test
     public void testUpdateOptionsWithoutMatch() {
         // Initialize to something other than 0;
         mDropDown.setSelectedIndex(VALUES.size() - 1);
@@ -147,12 +158,22 @@ public class FieldDropdownTest extends AndroidTestCase {
         mDropDown.getOptions().updateOptions(newOptions);
 
         // No matching value, so index should be 0;
-        assertEquals(0, mDropDown.getSelectedIndex());
+        assertThat(mDropDown.getSelectedIndex()).isEqualTo(0);
 
         for (int i = 1; i < VALUES.size(); i++) {
             mDropDown.setSelectedIndex(i);
-            assertEquals(LABELS.get(i), mDropDown.getSerializedValue());
-            assertEquals(VALUES.get(i), mDropDown.getSelectedDisplayName());
+            assertThat(mDropDown.getSerializedValue()).isEqualTo(LABELS.get(i));
+            assertThat(mDropDown.getSelectedDisplayName()).isEqualTo(VALUES.get(i));
         }
+    }
+
+    @Test
+    public void testObserverEvents() {
+        FieldTestHelper.testObserverEvent(mDropDown,
+                /* New value */ VALUES.get(2),
+                /* Expected old value */ VALUES.get(0),
+                /* Expected new value */ VALUES.get(2));
+
+        FieldTestHelper.testObserverNoEvent(mDropDown);
     }
 }

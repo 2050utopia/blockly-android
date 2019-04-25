@@ -15,24 +15,16 @@
 
 package com.google.blockly.android;
 
-import android.content.ComponentName;
-import android.content.Context;
-import android.content.Intent;
-import android.content.ServiceConnection;
 import android.content.SharedPreferences;
-import android.content.res.AssetManager;
 import android.os.Bundle;
-import android.os.IBinder;
 import android.preference.PreferenceManager;
 import android.support.annotation.NonNull;
-import android.support.annotation.Nullable;
-import android.support.v4.app.FragmentManager;
+import android.support.v4.app.Fragment;
 import android.support.v4.view.GravityCompat;
 import android.support.v4.widget.DrawerLayout;
 import android.support.v7.app.ActionBar;
 import android.support.v7.app.ActionBarDrawerToggle;
 import android.support.v7.app.AppCompatActivity;
-import android.support.v4.app.Fragment;
 import android.util.Log;
 import android.view.Gravity;
 import android.view.Menu;
@@ -40,57 +32,49 @@ import android.view.MenuItem;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.FrameLayout;
-import android.widget.Toast;
 
-import com.google.blockly.android.codegen.CodeGeneratorService;
+import com.google.blockly.android.codegen.CodeGenerationRequest;
+import com.google.blockly.android.codegen.LanguageDefinition;
 import com.google.blockly.android.control.BlocklyController;
 import com.google.blockly.android.ui.BlockViewFactory;
-import com.google.blockly.android.ui.DeleteVariableDialog;
-import com.google.blockly.android.ui.NameVariableDialog;
-import com.google.blockly.android.ui.WorkspaceHelper;
-import com.google.blockly.android.ui.BlocklyUnifiedWorkspace;
-import com.google.blockly.android.codegen.CodeGenerationRequest;
-import com.google.blockly.model.Block;
-import com.google.blockly.model.BlockFactory;
+import com.google.blockly.android.ui.MutatorFragment;
+import com.google.blockly.model.BlockExtension;
 import com.google.blockly.model.BlocklySerializerException;
-import com.google.blockly.model.Workspace;
-import com.google.blockly.utils.StringOutputStream;
+import com.google.blockly.model.CustomCategory;
+import com.google.blockly.model.DefaultBlocks;
+import com.google.blockly.model.Mutator;
+import com.google.blockly.utils.BlockLoadingException;
+import com.google.blockly.utils.LangUtils;
 
+import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
-import java.lang.reflect.InvocationTargetException;
-import java.util.Iterator;
 import java.util.List;
 
 /**
- * Base class for a Blockly activities that use a material design style tool bar, and optionally a
+ * Base class for a Blockly activity that use a material design style tool bar, and optionally a
  * navigation menu.
  * <p/>
- * The default layout is filled with a workspace and with the toolbox and trash configured as
- * fly-out views (via the {@link BlocklyUnifiedWorkspace}).  Everything below the
- * {@link ActionBar} can be replaced by overriding {@link #onCreateContentView}.  After
- * {@link #onCreateContentView}, the base implementation of {@link #onCreateFragments()} looks for
- * the {@link WorkspaceFragment}, the {@link ToolboxFragment}, and the {@link TrashFragment} via
- * fragment ids {@link R.id#blockly_workspace}, {@link R.id#blockly_toolbox}, and
- * {@link R.id#blockly_trash}, respectively. If overriding {@link #onCreateContentView} without
- * {@code unified_blockly_workspace.xml} or those fragment ids, override
- * {@link #onCreateFragments()}, appropriately.
+ * The default layout is filled with a workspace and the toolbox and trash each configured as
+ * fly-out views.  Everything below the {@link #mActionBar} can be replaced by overriding
+ * {@link #onCreateContentView}. After {@link #onCreateContentView}, a {@link BlocklyActivityHelper}
+ * is constructed to help initialize the Blockly fragments, controller, and supporting UI. If
+ * overriding {@link #onCreateContentView} without {@code unified_blockly_workspace.xml} or
+ * otherwise using standard blockly fragment and view ids ({@link R.id#blockly_workspace},
+ * {@link R.id#blockly_toolbox_ui}, {@link R.id#blockly_trash_ui}, etc.), override
+ * {@link #onCreateActivityHelper()} and {@link BlocklyActivityHelper#onFindFragments}
+ * appropriately.
  * <p/>
- * The activity can also contain a few buttons to control the workspace.
- * {@link R.id#blockly_zoom_in_button} and {@link R.id#blockly_zoom_out_button} control the
- * workspace zoom scale, and {@link R.id#blockly_center_view_button} will reset it.
- * {@link R.id#blockly_trash_icon} will toggle a closeable {@link TrashFragment}, and also act as
- * a block drop target to delete blocks.  The methods {@link #onConfigureTrashIcon()},
- * {@link #onConfigureZoomInButton()}, {@link #onConfigureZoomOutButton()}, and
- * {@link #onConfigureCenterViewButton()} will search for these views
- * and set the respective behavior.  By default, these buttons are provided by
- * {@link BlocklyUnifiedWorkspace} in {@link #onCreateContentView}.
+ * Once the controller and fragments are configured, if {@link #checkAllowRestoreBlocklyState}
+ * returns true, the activity will attempt to load a prior workspace from the instance state
+ * bundle.  If no workspace is loaded, it defers to {@link #onLoadInitialWorkspace}.
  * <p/>
- * Configure the workspace by providing definitions for {@link #getBlockDefinitionsJsonPaths()},
- * {@link #getToolboxContentsXmlPath()}, and {@link #onCreateBlockViewFactory}.  An initial
- * workspace can be defined by overriding {@link #getStartingWorkspacePath()}.
+ * Configure the workspace by providing definitions for {@link #getBlockDefinitionsJsonPaths()} and
+ * {@link #getToolboxContentsXmlPath()}. Alternate {@link BlockViewFactory}s are supported via
+ * {@link BlocklyActivityHelper#onCreateBlockViewFactory}. An initial workspace can be loaded during
+ * {@link #onLoadInitialWorkspace()}.
  * <p/>
- * The block definitions can be updated at any time by calling {@link #reloadBlockDefinitions()},
+ * The block definitions can be updated at any time by calling {@link #resetBlockFactory()},
  * which triggers another call to {@link #getBlockDefinitionsJsonPaths()}.  Similarly, The toolbox
  * can be reloaded by calling  {@link #reloadToolbox()}, which triggers another call to
  * {@link #getToolboxContentsXmlPath()}.
@@ -104,47 +88,16 @@ public abstract class AbstractBlocklyActivity extends AppCompatActivity {
 
     private static final String TAG = "AbstractBlocklyActivity";
 
-    public static final String DEFAULT_WORKSPACE_FILENAME = "workspace.xml";
+    protected BlocklyActivityHelper mBlocklyActivityHelper;
 
     protected ActionBar mActionBar;
     protected DrawerLayout mDrawerLayout;
-
-    protected WorkspaceHelper mWorkspaceHelper;
-    protected BlockViewFactory mBlockViewFactory;
-    protected WorkspaceFragment mWorkspaceFragment;
-    protected ToolboxFragment mToolboxFragment;
-    protected TrashFragment mTrashFragment;
 
     // These two may be null if {@link #onCreateAppNavigationDrawer} returns null.
     protected View mNavigationDrawer;
     protected ActionBarDrawerToggle mDrawerToggle;
 
-    // This may be null if {@link #getVariableCallback} never sets it.
-    private BlocklyController.VariableCallback mVariableCb;
     private boolean mUserLearnedDrawer;
-
-    protected BlocklyController mController;
-
-    // TODO(#282): Wrap service binding into a self-contained, reusable class.
-    protected CodeGeneratorService mCodeGeneratorService;
-    protected boolean mBound = false;
-
-    /** Defines service binding callbacks. Passed to bindService(). */
-    private final ServiceConnection mCodeGenerationConnection = new ServiceConnection() {
-        @Override
-        public void onServiceConnected(ComponentName className, IBinder service) {
-            CodeGeneratorService.CodeGeneratorBinder binder =
-                    (CodeGeneratorService.CodeGeneratorBinder) service;
-            mCodeGeneratorService = binder.getService();
-            mBound = true;
-        }
-
-        @Override
-        public void onServiceDisconnected(ComponentName arg0) {
-            mBound = false;
-            mCodeGeneratorService = null;
-        }
-    };
 
     @Override
     public boolean onCreateOptionsMenu(Menu menu) {
@@ -159,6 +112,12 @@ public abstract class AbstractBlocklyActivity extends AppCompatActivity {
         return super.onCreateOptionsMenu(menu);
     }
 
+    /**
+     * Handles the processing of Blockly's standard toolbar / actionbar menu items for this
+     * workspace.
+     * @param item One of Blockly's standard toolbar / actionbar menu items.
+     * @return True if the item is recognized and the event was consumed. Otherwise false.
+     */
     @Override
     public boolean onOptionsItemSelected(MenuItem item) {
         // Handle action bar item clicks here. The action bar will
@@ -176,7 +135,11 @@ public abstract class AbstractBlocklyActivity extends AppCompatActivity {
             onClearWorkspace();
             return true;
         } else if (id == R.id.action_run) {
-            onRunCode();
+            if (getController().getWorkspace().hasBlocks()) {
+                onRunCode();
+            } else {
+                Log.i(TAG, "No blocks in workspace. Skipping run request.");
+            }
             return true;
         } else if (id == android.R.id.home && mNavigationDrawer != null) {
             setNavDrawerOpened(!isNavDrawerOpen());
@@ -210,45 +173,20 @@ public abstract class AbstractBlocklyActivity extends AppCompatActivity {
 
     /**
      * Called when the user clicks the save action.  Default implementation delegates handling to
-     * {@link #saveWorkspaceToAppDir(String)} using {@link #DEFAULT_WORKSPACE_FILENAME}.
+     * {@link BlocklyActivityHelper#saveWorkspaceToAppDir(String)} using
+     * {@link #getWorkspaceSavePath()}.
      */
     public void onSaveWorkspace() {
-        saveWorkspaceToAppDir(DEFAULT_WORKSPACE_FILENAME);
-    }
-
-    /**
-     * Save the workspace to the given file in the application's private data directory.
-     */
-    public void saveWorkspaceToAppDir(String filename) {
-        Workspace workspace = mWorkspaceFragment.getWorkspace();
-        try {
-            workspace.serializeToXml(openFileOutput(filename, Context.MODE_PRIVATE));
-            Toast.makeText(getApplicationContext(), R.string.toast_workspace_saved,
-                    Toast.LENGTH_LONG).show();
-        } catch (FileNotFoundException | BlocklySerializerException e) {
-            Toast.makeText(getApplicationContext(), R.string.toast_workspace_not_saved,
-                    Toast.LENGTH_LONG).show();
-        }
+        mBlocklyActivityHelper.saveWorkspaceToAppDirSafely(getWorkspaceSavePath());
     }
 
     /**
      * Called when the user clicks the load action.  Default implementation delegates handling to
-     * {@link #loadWorkspaceFromAppDir(String)}.
+     * {@link BlocklyActivityHelper#loadWorkspaceFromAppDir(String)} using
+     * {@link #getWorkspaceSavePath()}.
      */
     public void onLoadWorkspace() {
-        loadWorkspaceFromAppDir(DEFAULT_WORKSPACE_FILENAME);
-    }
-
-    /**
-     * Loads the workspace from the given file in the application's private data directory.
-     */
-    public void loadWorkspaceFromAppDir(String filename) {
-        try {
-            mController.loadWorkspaceContents(openFileInput(filename));
-        } catch (FileNotFoundException e) {
-            Toast.makeText(getApplicationContext(), R.string.toast_workspace_file_not_found,
-                    Toast.LENGTH_LONG).show();
-        }
+        mBlocklyActivityHelper.loadWorkspaceFromAppDirSafely(getWorkspaceSavePath());
     }
 
     /**
@@ -257,7 +195,7 @@ public abstract class AbstractBlocklyActivity extends AppCompatActivity {
      * {@link #onInitBlankWorkspace()}.
      */
     public void onClearWorkspace() {
-        mController.resetWorkspace();
+        getController().resetWorkspace();
         onInitBlankWorkspace();
     }
 
@@ -269,41 +207,35 @@ public abstract class AbstractBlocklyActivity extends AppCompatActivity {
     @Override
     public void onSaveInstanceState(Bundle outState) {
         super.onSaveInstanceState(outState);
-        onSaveWorkspaceSnapshot(outState);
+        getController().onSaveSnapshot(outState);
     }
 
     /**
      * @return The {@link BlocklyController} controlling the workspace in this activity.
      */
     public final BlocklyController getController() {
-        return mController;
+        return mBlocklyActivityHelper.getController();
     }
 
     /**
      * Handles the back button.  Default implementation attempts to close the navigation menu, then
-     * the toolbox, then the trash, before allowing the system to back out of the activity.
+     * the toolbox and trash flyouts, before allowing the system to back out of the activity.
      *
      * @see #onBackToCloseNavMenu()
-     * @see #onBackToCloseToolbox()
-     * @see #onBackToCloseTrash()
+     * @see BlocklyActivityHelper#onBackToCloseFlyouts()
      */
     @Override
     public void onBackPressed() {
         // Try to close any open drawer / toolbox before backing out of the Activity.
-        if (!onBackToCloseNavMenu() && !onBackToCloseToolbox() && !onBackToCloseTrash()) {
+        if (!onBackToCloseNavMenu() && !mBlocklyActivityHelper.onBackToCloseFlyouts()) {
             super.onBackPressed();
         }
     }
 
     /**
-     * Creates the Activity Views, Fragments, and BlocklyController via a sequence of calls to
-     * <ul>
-     *     <li>{@link #onCreateActivityRootView}</li>
-     *     <li>{@link #onCreateFragments}</li>
-     *     <li>{@link #onCreateBlockViewFactory}</li>
-     *     <li>{@link #getBlockDefinitionsJsonPaths}</li>
-     *     <li>{@link #getToolboxContentsXmlPath}</li>
-     * </ul>
+     * Creates the activity's views and fragments (via {@link #onCreateActivityRootView}, and then
+     * initializes Blockly via {@link #onCreateActivityHelper()}, using the values from
+     * {@link #getBlockDefinitionsJsonPaths} and {@link #getToolboxContentsXmlPath}.
      * Subclasses should override those methods to configure the Blockly environment.
      * <p/>
      * Once the controller and fragments are configured, if {@link #checkAllowRestoreBlocklyState}
@@ -314,74 +246,102 @@ public abstract class AbstractBlocklyActivity extends AppCompatActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
+        LangUtils.setLang(getLang());
+
         onCreateActivityRootView();
-        onCreateFragments();
-        if (mWorkspaceFragment == null) {
-            throw new IllegalStateException("mWorkspaceFragment is null");
+        mBlocklyActivityHelper = onCreateActivityHelper();
+        if (mBlocklyActivityHelper == null) {
+            throw new IllegalStateException("BlocklyActivityHelper is null. "
+                    + "onCreateActivityHelper must return a instance.");
         }
+        resetBlockFactory();  // Initial load of block definitions, extensions, and mutators.
+        configureCategoryFactories();  // After BlockFactory; before Toolbox
+        reloadToolbox();
 
-        mWorkspaceHelper = new WorkspaceHelper(this);
-        mBlockViewFactory = onCreateBlockViewFactory(mWorkspaceHelper);
-
-        BlocklyController.Builder builder = new BlocklyController.Builder(this)
-                .setAssetManager(getAssets())  // TODO(#128) Remove
-                .setWorkspaceHelper(mWorkspaceHelper)
-                .setBlockViewFactory(mBlockViewFactory)
-                .setVariableCallback(getVariableCallback())
-                .setWorkspaceFragment(mWorkspaceFragment)
-                .addBlockDefinitionsFromAssets(getBlockDefinitionsJsonPaths())
-                .setToolboxConfigurationAsset(getToolboxContentsXmlPath())
-                .setTrashFragment(mTrashFragment)
-                .setToolboxFragment(mToolboxFragment, mDrawerLayout);
-        mController = builder.build();
-        onConfigureTrashIcon();
-        onConfigureZoomInButton();
-        onConfigureZoomOutButton();
-        onConfigureCenterViewButton();
-
+        // Load the workspace.
         boolean loadedPriorInstance = checkAllowRestoreBlocklyState(savedInstanceState)
-                && mController.onRestoreSnapshot(savedInstanceState);
+                && (getController().onRestoreSnapshot(savedInstanceState) || onAutoload());
         if (!loadedPriorInstance) {
             onLoadInitialWorkspace();
         }
     }
 
     /**
-     * Constructs the {@link BlockViewFactory} used by all fragments in this activity. The Blockly
-     * core library does not include a factory implementation, and the app developer will need to
-     * include blockly vertical or another block rendering implementation.
-     * <p>
-     * The default implementation atempts to instantiates a VerticalBlockViewFactory, which is
-     * included in the blocklylib-vertical library.  An error will be thrown unless
-     * blocklylib-vertical is included or this method is overridden to provide a custom
-     * BlockViewFactory.
+     * Override to use a different language File in ms/js (Defaults to "en")
      *
-     * @param helper The Workspace helper for this activity.
-     * @return The {@link BlockViewFactory} used by all fragments in this activity.
+     * Blockly two letter language codes differ slightly than the Android recognized set.
+     * While the vast majority of users will not have an issue, some edge dialects may differ.
+     * See files (and filenames) in https://github.com/google/blockly/tree/master/msg/js for the
+     * latest available set.
+     *
+     * @return Selected Language
      */
-    public BlockViewFactory onCreateBlockViewFactory(WorkspaceHelper helper) {
-        try {
-            Class<? extends BlockViewFactory> clazz =
-                    (Class<? extends BlockViewFactory>)Class.forName(
-                            "com.google.blockly.android.ui.vertical.VerticalBlockViewFactory");
-            return clazz.getConstructor(Context.class, WorkspaceHelper.class)
-                    .newInstance(this, helper);
-        } catch (ClassNotFoundException e) {
-            throw new RuntimeException(
-                    "Default BlockViewFactory not found. Did you include blocklylib-vertical?", e);
-        } catch (NoSuchMethodException | InstantiationException |
-                IllegalAccessException | InvocationTargetException e) {
-            throw new RuntimeException("Unable to instantiate VerticalBlockViewFactory", e);
+    public String getLang() {
+        return "en";
+    }
+
+    /**
+     * Create a {@link BlocklyActivityHelper} to use for this Activity.
+     */
+    protected BlocklyActivityHelper onCreateActivityHelper() {
+        return new BlocklyActivityHelper(this, this.getSupportFragmentManager());
+    }
+
+    /** Propagate lifecycle event to BlocklyActivityHelper. */
+    @Override
+    protected void onStart() {
+        super.onStart();
+        mBlocklyActivityHelper.onStart();
+    }
+
+    /** Propagate lifecycle event to BlocklyActivityHelper. */
+    @Override
+    protected void onPause() {
+        super.onPause();
+        mBlocklyActivityHelper.onPause();
+        onAutosave();
+    }
+
+    /** Propagate lifecycle event to BlocklyActivityHelper. */
+    @Override
+    protected void onResume() {
+        super.onResume();
+        mBlocklyActivityHelper.onResume();
+
+        if (mNavigationDrawer != null) {
+            // Read in the flag indicating whether or not the user has demonstrated awareness of the
+            // drawer. See PREF_USER_LEARNED_DRAWER for details.
+            SharedPreferences sp = PreferenceManager.getDefaultSharedPreferences(this);
+            mUserLearnedDrawer = sp.getBoolean(PREF_USER_LEARNED_DRAWER, false);
+            if (!mUserLearnedDrawer) {
+                mDrawerLayout.openDrawer(mNavigationDrawer);
+            }
         }
+    }
+
+    /** Propagate lifecycle event to BlocklyActivityHelper. */
+    @Override
+    protected void onStop() {
+        super.onStop();
+        mBlocklyActivityHelper.onStop();
+    }
+
+    /** Propagate lifecycle event to BlocklyActivityHelper. */
+    @Override
+    protected void onRestart() {
+        super.onRestart();
+        mBlocklyActivityHelper.onRestart();
     }
 
     /**
      *
      * Returns true if the app should proceed to restore the blockly state from the
-     * {@code savedInstanceState} Bundle. By default, it always returns true, but Activity
-     * developers can override this method to add conditional logic.
+     * {@code savedInstanceState} Bundle or the {@link #onAutoload() auto save} file. By default, it
+     * always returns true, but Activity developers can override this method to add conditional
+     * logic.
      * <p/>
-     * This does not prevent the state from saving to a Bundle during {@link #onSaveInstanceState}.
+     * This does not prevent the state from saving to a Bundle during {@link #onSaveInstanceState}
+     * or saving to a file in {@link #onAutosave()}.
      *
      * @param savedInstanceState The Bundle to restore state from.
      * @return True if Blockly state should be restored. Otherwise, null.
@@ -396,7 +356,44 @@ public abstract class AbstractBlocklyActivity extends AppCompatActivity {
      */
     protected void onLoadInitialWorkspace() {
         onInitBlankWorkspace();
-        mToolboxFragment.closeBlocksDrawer();
+        getController().closeFlyouts();
+    }
+
+    /**
+     * Called when an autosave of the workspace is triggered, typically by {@link #onPause()}.
+     * By default this saves the workspace to a file in the app's directory.
+     */
+    protected void onAutosave() {
+        try {
+            mBlocklyActivityHelper.saveWorkspaceToAppDir(getWorkspaceAutosavePath());
+        } catch (FileNotFoundException | BlocklySerializerException e) {
+            Log.e(TAG, "Failed to autosaving workspace.", e);
+        }
+    }
+
+    /**
+     * Called when the activity tries to restore the autosaved workspace, typically by
+     * {@link #onCreate(Bundle)} if there was no workspace data in the bundle.
+     *
+     * @return true if a previously saved workspace was loaded, false otherwise.
+     */
+    protected boolean onAutoload() {
+        String filePath = getWorkspaceAutosavePath();
+        try {
+            mBlocklyActivityHelper.loadWorkspaceFromAppDir(filePath);
+            return true;
+        } catch (FileNotFoundException e) {
+            // No workspace was saved previously.
+        } catch (BlockLoadingException | IOException e) {
+            Log.e(TAG, "Failed to load workspace", e);
+            mBlocklyActivityHelper.getController().resetWorkspace();
+
+            File file = getFileStreamPath(filePath);
+            if (!file.delete()) {
+                Log.e(TAG, "Failed to delete corrupted autoload workspace: " + filePath);
+            }
+        }
+        return false;
     }
 
     /**
@@ -406,48 +403,14 @@ public abstract class AbstractBlocklyActivity extends AppCompatActivity {
     protected void onInitBlankWorkspace() {}
 
     /**
-     * @return The id of the menu resource used to populate the {@link ActionBar}.
+     * @return The id of the menu resource used to populate the {@link #mActionBar}.
      */
     protected int getActionBarMenuResId() {
         return R.menu.blockly_default_actionbar;
     }
 
-    @Override
-    protected void onResume() {
-        super.onResume();
-        Intent intent = new Intent(this, CodeGeneratorService.class);
-        bindService(intent, mCodeGenerationConnection, Context.BIND_AUTO_CREATE);
-
-        if (mNavigationDrawer != null) {
-            // Read in the flag indicating whether or not the user has demonstrated awareness of the
-            // drawer. See PREF_USER_LEARNED_DRAWER for details.
-            SharedPreferences sp = PreferenceManager.getDefaultSharedPreferences(this);
-            mUserLearnedDrawer = sp.getBoolean(PREF_USER_LEARNED_DRAWER, false);
-            if (!mUserLearnedDrawer) {
-                mDrawerLayout.openDrawer(mNavigationDrawer);
-            }
-        }
-    }
-
     /**
-     * Saves a snapshot of the current workspace.  Called during {@link #onSaveInstanceState}. By
-     * default, it just calls {@link BlocklyController#onSaveSnapshot}, but subclasses can overload
-     * it change the behavior (e.g., only save based on some condition.).
-     *
-     * @param outState
-     */
-    protected void onSaveWorkspaceSnapshot(Bundle outState) {
-        mController.onSaveSnapshot(outState);
-    }
-
-    @Override
-    protected void onPause() {
-        super.onPause();
-        unbindService(mCodeGenerationConnection);
-    }
-
-    /**
-     * @return The name to show in the {@link ActionBar}.  Defaults to the activity name.
+     * @return The name to show in the {@link #mActionBar}.  Defaults to the activity name.
      */
     @NonNull
     protected CharSequence getWorkspaceTitle() {
@@ -467,8 +430,63 @@ public abstract class AbstractBlocklyActivity extends AppCompatActivity {
     abstract protected List<String> getBlockDefinitionsJsonPaths();
 
     /**
+     * @return The asset path for the core language file used to generate code.
+     */
+    @NonNull
+    protected LanguageDefinition getBlockGeneratorLanguage() {
+        return DefaultBlocks.LANGUAGE_DEFINITION;
+    }
+
+    /**
+     * This method provides a hook to register {@link BlockExtension}s that support the block
+     * definitions in this activity. By default, it adds all extensions in
+     * {@link DefaultBlocks#getExtensions() DefaultBlocks} to the block factory, via the
+     * {@link #onCreateActivityHelper() BlocklyActivityHelper}
+     * {@link BlocklyActivityHelper#configureExtensions() implementation}.
+     * <p/>
+     * Extensions with the same key will replace existing extensions, so it is safe
+     * to call super and then update specific extensions.
+     * <p/>
+     * Called from {@link #resetBlockFactory()}.
+     */
+    protected void configureBlockExtensions() {
+        mBlocklyActivityHelper.configureExtensions();
+    }
+
+    /**
+     * This method provides a hook to register {@link Mutator.Factory}s and
+     * {@link MutatorFragment.Factory}s that support the block definitions in this activity. By
+     * default, it adds the mutators in {@link DefaultBlocks#getMutators() DefaultBlocks} to the
+     * BlockFactory, via the {@link #onCreateActivityHelper() BlocklyActivityHelper}
+     * {@link BlocklyActivityHelper#configureMutators() implementation}.
+     * <p/>
+     * Mutators with the same key will replace existing mutators, so it is safe
+     * to call super and then update specific mutators.
+     * <p/>
+     * Called from {@link #resetBlockFactory()}.
+     */
+    protected void configureMutators() {
+        mBlocklyActivityHelper.configureMutators();
+    }
+
+    /**
+     * This method provides a hook to register custom {@link CustomCategory}s that support
+     * the toolboxes in this activity. By default, it registers the categories in
+     * {@link DefaultBlocks}, via the {@link #onCreateActivityHelper() BlocklyActivityHelper}
+     * {@link BlocklyActivityHelper#configureMutators() implementation}.
+     * <p/>
+     * Category factories with the same {@code custom} key will replace existing
+     * {@link CustomCategory}s, so it is safe to call super and then update specific categories.
+     * <p/>
+     * Called once at activity creation.
+     */
+    protected void configureCategoryFactories() {
+        mBlocklyActivityHelper.configureCategoryFactories();
+    }
+
+    /**
      * Returns the asset file paths to the generators (JS files) to use for the most
-     * recently requested "Run" action. Called from {@link #onRunCode()}.This is expected to be a
+     * recently requested "Run" action. Called from {@link #onRunCode()}. This is expected to be a
      * list of JavaScript files that contain the block generators.
      *
      * @return The list of file paths to the block generators.
@@ -486,41 +504,21 @@ public abstract class AbstractBlocklyActivity extends AppCompatActivity {
     abstract protected CodeGenerationRequest.CodeGeneratorCallback getCodeGenerationCallback();
 
     /**
-     * Returns the asset path to the initial workspace to load.  If null, no workspace file will be
-     * loaded.
-     *
-     * @return The asset path to the initial workspace to load.
+     * @return The path to the saved workspace file on the local device. By default,
+     *         "workspace.xml".
      */
-    @Nullable
-    protected String getStartingWorkspacePath() {
-        return null;
+    @NonNull
+    protected String getWorkspaceSavePath() {
+        return "workspace.xml";
     }
 
     /**
-     * Returns a style to override the application's theme with when rendering Blockly. If 0 is
-     * returned the activity or application's theme will be used, with attributes defaulting to
-     * those in {@link R.style#BlocklyTheme}.
-     *
-     * @return A style that inherits from {@link R.style#BlocklyTheme} or 0.
+     * @return The path to the automatically saved workspace file on the local device. By default,
+     *         "autosave_workspace.xml".
      */
-    protected int getStyleResId() {
-        return 0;
-    }
-
-    /**
-     * Returns a callback for handling user requests to change the list of variables (create,
-     * rename, delete). This can be used to provide UI for confirming a deletion or renaming a
-     * variable.
-     *
-     * @return A {@link com.google.blockly.android.control.BlocklyController.VariableCallback} for
-     *         handling variable updates from the controller.
-     */
-    protected BlocklyController.VariableCallback getVariableCallback() {
-        if (mVariableCb == null) {
-            mVariableCb = new DefaultVariableCallback(new DeleteVariableDialog(),
-                    new NameVariableDialog());
-        }
-        return mVariableCb;
+    @NonNull
+    protected String getWorkspaceAutosavePath() {
+        return "autosave_workspace.xml";
     }
 
     /**
@@ -584,8 +582,6 @@ public abstract class AbstractBlocklyActivity extends AppCompatActivity {
                 Gravity.START);
         // Add navigation drawer above the content view, as the first drawer.
         mDrawerLayout.addView(mNavigationDrawer, 1, lp);
-        // TODO(#362): Replace NAVIGATION_MODE_STANDARD, expose Up versus Back alternatives.
-        mActionBar.setNavigationMode(ActionBar.NAVIGATION_MODE_STANDARD);
 
         // set a custom shadow that overlays the main content when the drawer opens
         mDrawerLayout.setDrawerShadow(R.drawable.drawer_shadow,
@@ -634,202 +630,63 @@ public abstract class AbstractBlocklyActivity extends AppCompatActivity {
     }
 
     /**
-     * Creates the Views and Fragments before the BlocklyController is constructed.  Override to
-     * load a custom View hierarchy.  Responsible for assigning
-     * {@link #mWorkspaceFragment}, and optionally, {@link #mToolboxFragment} and
-     * {@link #mTrashFragment}. This base implementation attempts to acquire references to the
-     * {@link #mToolboxFragment} and {@link #mTrashFragment} using the layout ids
-     * {@link R.id#} and {@link R.id#blockly_trash}, respectively. Subclasses may leave these
-     * {@code null} if the views are not present in the UI.
-     * <p>
-     * Always called once from {@link #onCreate} and before {@link #mController} is instantiated.
-     */
-    protected void onCreateFragments() {
-        FragmentManager fragmentManager = getSupportFragmentManager();
-        mWorkspaceFragment = (WorkspaceFragment)
-                fragmentManager.findFragmentById(R.id.blockly_workspace);
-        mToolboxFragment =
-                (ToolboxFragment) fragmentManager.findFragmentById(R.id.blockly_toolbox);
-        mTrashFragment = (TrashFragment) fragmentManager.findFragmentById(R.id.blockly_trash);
-
-        if (mTrashFragment != null) {
-            // TODO(#14): Make trash list a drop location.
-        }
-    }
-
-    /**
-     * This method finds and configures {@link R.id#blockly_trash_icon} from the view hierarchy as
-     * the button to open and close the {@link TrashFragment}, and a drop location for deleting
-     * blocks. If {@link R.id#blockly_trash_icon} is not found, it does nothing.
-     * <p/>
-     * This is called after {@link #mController} is initialized, but before any blocks are loaded
-     * into the workspace.
-     */
-    protected void onConfigureTrashIcon() {
-        View trashIcon = findViewById(R.id.blockly_trash_icon);
-        if (mTrashFragment != null && trashIcon != null) {
-            if (mTrashFragment.isCloseable()) {
-                mTrashFragment.setOpened(false);
-
-                trashIcon.setOnClickListener(new View.OnClickListener() {
-                    @Override
-                    public void onClick(View v) {
-                        // Toggle opened state.
-                        mTrashFragment.setOpened(!mTrashFragment.isOpened());
-                    }
-                });
-            }
-            mController.setTrashIcon(trashIcon);
-        }
-    }
-
-    /**
-     * This method finds and configures {@link R.id#blockly_zoom_in_button} from the view hierarchy
-     * as the button to zoom in (e.g., enlarge) the workspace view. If
-     * {@link R.id#blockly_zoom_in_button} is not found, it does nothing.
-     * <p/>
-     * This is called after {@link #mController} is initialized, but before any blocks are loaded
-     * into the workspace.
-     */
-    protected void onConfigureZoomInButton() {
-        View zoomInButton = findViewById(R.id.blockly_zoom_in_button);
-        if (zoomInButton != null) {
-            zoomInButton.setOnClickListener(new View.OnClickListener() {
-                @Override
-                public void onClick(View v) {
-                    mController.zoomIn();
-                }
-            });
-        }
-    }
-
-    /**
-     * This method finds and configures {@link R.id#blockly_zoom_out_button} from the view hierarchy
-     * as the button to zoom out (e.g., shrink) the workspace view. If
-     * {@link R.id#blockly_zoom_out_button} is not found, it does nothing.
-     * <p/>
-     * This is called after {@link #mController} is initialized, but before any blocks are loaded
-     * into the workspace.
-     */
-    protected void onConfigureZoomOutButton() {
-        View zoomOutButton = findViewById(R.id.blockly_zoom_out_button);
-        if (zoomOutButton != null) {
-            zoomOutButton.setOnClickListener(new View.OnClickListener() {
-                @Override
-                public void onClick(View v) {
-                    mController.zoomOut();
-                }
-            });
-        }
-    }
-
-    /**
-     * This method finds and configures {@link R.id#blockly_center_view_button} from the view
-     * hierarchy as the button to reset the workspace view. If
-     * {@link R.id#blockly_center_view_button} is not found, it does nothing.
-     * <p/>
-     * This is called after {@link #mController} is initialized, but before any blocks are loaded
-     * into the workspace.
-     */
-    protected void onConfigureCenterViewButton() {
-        View recenterButton = findViewById(R.id.blockly_center_view_button);
-        if (recenterButton != null) {
-            recenterButton.setOnClickListener(new View.OnClickListener() {
-                @Override
-                public void onClick(View v) {
-                    mController.recenterWorkspace();
-                }
-            });
-        }
-    }
-
-    /**
      * Runs the code generator. Called when user selects "Run" action.
+     * <p/>
+     * Gets the latest block definitions and generator code by calling
+     * {@link #getBlockDefinitionsJsonPaths()} and {@link #getGeneratorsJsPaths()} just before
+     * invoking generation.
+     *
      * @see #getCodeGenerationCallback()
      */
     protected void onRunCode() {
-        try {
-            if (mWorkspaceFragment.getWorkspace().getRootBlocks().size() == 0) {
-                Log.i(TAG, "No blocks in workspace. Skipping run request.");
-                return;
-            }
-            if (mBound) {
-                final StringOutputStream serialized = new StringOutputStream();
-                mWorkspaceFragment.getWorkspace().serializeToXml(serialized);
-
-                mCodeGeneratorService.requestCodeGeneration(
-                        new CodeGenerationRequest(serialized.toString(),
-                                getCodeGenerationCallback(),
-                                getBlockDefinitionsJsonPaths(),
-                                getGeneratorsJsPaths()));
-            }
-        } catch (BlocklySerializerException e) {
-            Log.wtf(TAG, e);
-            Toast.makeText(getApplicationContext(), "Code generation failed.",
-                    Toast.LENGTH_LONG).show();
-
-        }
+        mBlocklyActivityHelper.requestCodeGeneration(
+                getBlockGeneratorLanguage(),
+                getBlockDefinitionsJsonPaths(),
+                getGeneratorsJsPaths(),
+                getCodeGenerationCallback());
     }
 
     /**
-     * Restores the {@link ActionBar} contents when the navigation window closes, per <a
+     * Restores the {@link #mActionBar} contents when the navigation window closes, per <a
      * href="http://developer.android.com/design/material/index.html">Material design
      * guidelines</a>.
      */
     protected void restoreActionBar() {
         ActionBar actionBar = getSupportActionBar();
-        // TODO(#362): Replace NAVIGATION_MODE_STANDARD, expose Up versus Back alternatives.
-        actionBar.setNavigationMode(ActionBar.NAVIGATION_MODE_STANDARD);
-        actionBar.setDisplayShowTitleEnabled(true);
-        actionBar.setTitle(getWorkspaceTitle());
+        if (actionBar != null) {
+            actionBar.setDisplayShowTitleEnabled(true);
+            actionBar.setTitle(getWorkspaceTitle());
+        }
     }
 
     /**
-     * Reloads the block definitions and toolbox contents.
-     * @see #getToolboxContentsXmlPath()
+     * Reloads the toolbox contents using the path provided by {@link #getToolboxContentsXmlPath()}.
      */
     protected void reloadToolbox() {
-        AssetManager assetManager = getAssets();
-        String toolboxPath = getToolboxContentsXmlPath();
-
-        BlocklyController controller = getController();
-        try {
-            controller.loadToolboxContents(assetManager.open(getToolboxContentsXmlPath()));
-        } catch (IOException e) {
-            throw new IllegalArgumentException("Error opening toolbox at " + toolboxPath, e);
-        }
+        mBlocklyActivityHelper.reloadToolbox(getToolboxContentsXmlPath());
     }
 
     /**
-     * Reloads the block definitions.
-     * @see #getBlockDefinitionsJsonPaths()
+     * Reloads the block definitions, including extensions and mutators. Calls
+     * {@link #getBlockDefinitionsJsonPaths()} and {@link #configureBlockExtensions()}.
+     *
+     * @throws IOException If there is a fundamental problem with the input.
+     * @throws BlockLoadingException If the definition is malformed.
      */
-    protected void reloadBlockDefinitions() {
-        AssetManager assetManager = getAssets();
-        List<String> blockDefsPaths = getBlockDefinitionsJsonPaths();
+    protected void resetBlockFactory() {
+        mBlocklyActivityHelper.resetBlockFactory(
+                getBlockDefinitionsJsonPaths());
 
-        BlockFactory factory = getController().getBlockFactory();
-        factory.clear();
+        configureBlockExtensions();
+        configureMutators();
+        configureCategoryFactories();
 
-        String blockDefsPath = null;
-        Iterator<String> iter = blockDefsPaths.iterator();
-        while (iter.hasNext()) {
-            blockDefsPath = iter.next();
-            try {
-                factory.addBlocks(assetManager.open(blockDefsPath));
-            } catch (IOException e) {
-                factory.clear();  // Clear any partial loaded block sets.
-                // Compile-time bundled assets are assumed to be valid.
-                throw new IllegalStateException("Failed to load block definitions from asset: "
-                        + blockDefsPath, e);
-            }
-        }
+        // Reload the toolbox?
     }
 
-
     /**
-     * @return True if the action consumed to close a previously open navigation menu. Otherwise
-     *         false.
+     * @return True if the navigation menu was closed and the back event should be consumed.
+     *         Otherwise false.
      */
     protected boolean onBackToCloseNavMenu() {
         if (mDrawerLayout.isDrawerOpen(GravityCompat.START)) {
@@ -837,84 +694,5 @@ public abstract class AbstractBlocklyActivity extends AppCompatActivity {
             return true;
         }
         return false;
-    }
-
-    /**
-     * @return True if the action was handled to close a previously open (and closable) toolbox.
-     *         Otherwise false.
-     */
-    protected boolean onBackToCloseToolbox() {
-        return mToolboxFragment != null
-                && mToolboxFragment.isCloseable()
-                && mToolboxFragment.closeBlocksDrawer();
-    }
-
-    /**
-     * @return True if the action was handled to close a previously open (and closable) trash.
-     *         Otherwise false.
-     */
-    protected boolean onBackToCloseTrash() {
-        return mTrashFragment != null
-                && mTrashFragment.isCloseable()
-                && mTrashFragment.setOpened(false);
-    }
-
-    private class DefaultVariableCallback extends BlocklyController.VariableCallback {
-        private final DeleteVariableDialog mDeleteDialog;
-        private final NameVariableDialog mNameDialog;
-
-        private final NameVariableDialog.Callback mRenameCallback = new NameVariableDialog
-                .Callback() {
-            @Override
-            public void onNameConfirmed(String oldName, String newName) {
-                getController().renameVariable(oldName, newName);
-            }
-        };
-        private final NameVariableDialog.Callback mCreateCallback = new NameVariableDialog
-                .Callback() {
-            @Override
-            public void onNameConfirmed(String originalName, String newName) {
-                getController().addVariable(newName);
-            }
-        };
-
-
-        public DefaultVariableCallback(DeleteVariableDialog deleteVariableDialog,
-                NameVariableDialog nameVariableDialog) {
-            mDeleteDialog = deleteVariableDialog;
-            mNameDialog = nameVariableDialog;
-        }
-
-        @Override
-        public boolean onDeleteVariable(String variable) {
-            BlocklyController controller = getController();
-            if (!controller.isVariableInUse(variable)) {
-                return true;
-            }
-            List<Block> blocks = controller.getBlocksWithVariable(variable);
-            if (blocks.size() == 1) {
-                // For one block just let the controller delete it.
-                return true;
-            }
-
-            mDeleteDialog.setController(controller);
-            mDeleteDialog.setVariable(variable, blocks.size());
-            mDeleteDialog.show(getSupportFragmentManager(), "DeleteVariable");
-            return false;
-        }
-
-        @Override
-        public boolean onRenameVariable(String variable, String newName) {
-            mNameDialog.setVariable(variable, mRenameCallback);
-            mNameDialog.show(getSupportFragmentManager(), "RenameVariable");
-            return false;
-        }
-
-        @Override
-        public boolean onCreateVariable(String variable) {
-            mNameDialog.setVariable(variable, mCreateCallback);
-            mNameDialog.show(getSupportFragmentManager(), "CreateVariable");
-            return false;
-        }
     }
 }

@@ -19,7 +19,6 @@ import android.support.annotation.IntDef;
 import android.support.annotation.Nullable;
 import android.support.annotation.VisibleForTesting;
 import android.text.TextUtils;
-import android.util.Log;
 
 import com.google.blockly.android.ui.InputView;
 
@@ -54,6 +53,7 @@ public class Connection implements Cloneable {
      * a block.
      */
     public static final int CONNECTION_TYPE_OUTPUT = 3;
+
     public static final int CAN_CONNECT = 0;
     public static final int REASON_SELF_CONNECTION = 1;
     public static final int REASON_WRONG_TYPE = 2;
@@ -72,6 +72,7 @@ public class Connection implements Cloneable {
     @ConnectionType
     private final int mConnectionType;
     private final String[] mConnectionChecks;
+
     /**
      * Position of the connection in the workspace, used by the connection manager. The position is
      * not a part of the serialized model, and is only updated when connected to a view.
@@ -87,7 +88,7 @@ public class Connection implements Cloneable {
     private Connection mTargetShadowConnection;
     private boolean mInDragMode = false;
 
-    public Connection(@ConnectionType int type, String[] checks) {
+    public Connection(@ConnectionType int type, @Nullable String[] checks) {
         mConnectionType = type;
         mConnectionChecks = checks;
     }
@@ -115,6 +116,16 @@ public class Connection implements Cloneable {
     /**
      * Sets the connection (and shadow block) to use when a normal block isn't connected. This may
      * only be called on connections that belong to an input (value or statement).
+     *
+     * This method does not connect the shadow to the visible connection. For that, follow this call
+     * with connect():
+     * <pre>{@code
+     * parentConnection.setShadowConnection(childConnection)
+     * if (!parentConnection.isConnected()) {
+     *     // If there is no standard child block, so connect the shadow
+     *     parentConnection.connect(childConnection);
+     * }
+     * }</pre>
      *
      * @param target The connection on the shadow block to use.
      */
@@ -262,7 +273,7 @@ public class Connection implements Cloneable {
      * @param x The x position in workspace coordinates.
      * @param y The y position in workspace coordinates.
      */
-    public void setPosition(int x, int y) {
+    public void setPosition(float x, float y) {
         mPosition.x = x;
         mPosition.y = y;
     }
@@ -275,8 +286,8 @@ public class Connection implements Cloneable {
      * @return The distance between connections.
      */
     public double distanceFrom(Connection other) {
-        int xDiff = mPosition.x - other.getPosition().x;
-        int yDiff = mPosition.y - other.getPosition().y;
+        float xDiff = mPosition.x - other.getPosition().x;
+        float yDiff = mPosition.y - other.getPosition().y;
         return Math.sqrt(xDiff * xDiff + yDiff * yDiff);
     }
 
@@ -396,6 +407,33 @@ public class Connection implements Cloneable {
                 }
             }
         }
+        return false;
+    }
+
+
+    /***
+     * Checks if the two connection types match,
+     * and returns true if the connection is empty or if their type contains the same.
+     * Otherwise return false,
+     *
+     * @param source one of the connections that will be checked.
+     * @param target another connection that will be checked.
+     * @return check result
+     */
+    public static boolean checksMatch(Connection source,Connection target){
+        if(source.mConnectionChecks == null || target.mConnectionChecks == null) {
+            return true;
+        }
+
+        for (int i = 0; i < source.mConnectionChecks.length; i++){
+            for (int j = 0; j < target.mConnectionChecks.length; j++) {
+                if (TextUtils.equals(source.mConnectionChecks[i], target.mConnectionChecks[j])) {
+                    return true;
+                }
+            }
+
+        }
+
         return false;
     }
 

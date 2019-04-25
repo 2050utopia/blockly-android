@@ -17,51 +17,54 @@ package com.google.blockly.android.ui.fieldview;
 
 import android.support.annotation.NonNull;
 
-import com.google.blockly.android.MockitoAndroidTestCase;
-import com.google.blockly.android.ui.WorkspaceHelper;
+import com.google.blockly.android.BlocklyTestCase;
 import com.google.blockly.model.FieldCheckbox;
 
-import org.mockito.Mock;
+import org.junit.Before;
+import org.junit.Test;
+
+import static com.google.common.truth.Truth.assertThat;
 
 /**
  * Tests for {@link BasicFieldCheckboxView}.
  */
-public class BasicFieldCheckboxViewTest extends MockitoAndroidTestCase {
+public class BasicFieldCheckboxViewTest extends BlocklyTestCase {
     private FieldCheckbox mFieldCheckbox;
 
-    @Override
-    public void setUp() throws Exception {
-        super.setUp();
-
+    @Before
+     public void setUp() throws Exception {
+        configureForUIThread();
         mFieldCheckbox = new FieldCheckbox("FieldCheckbox", false);
     }
 
     // Verify field object gets updated when view is checked/unchecked.
+    @Test
     public void testFieldUpdatesFromView() {
         final BasicFieldCheckboxView view = makeFieldCheckboxView();
-        assertFalse(mFieldCheckbox.isChecked());
-        assertEquals(mFieldCheckbox.isChecked(), view.isChecked());
+        assertThat(mFieldCheckbox.isChecked()).isFalse();
+        assertThat(view.isChecked()).isEqualTo(mFieldCheckbox.isChecked());
 
         view.performClick();
-        assertTrue(mFieldCheckbox.isChecked());
+        assertThat(mFieldCheckbox.isChecked()).isTrue();
 
         view.performClick();
-        assertFalse(mFieldCheckbox.isChecked());
+        assertThat(mFieldCheckbox.isChecked()).isFalse();
     }
 
     // Verify that view gets updated if field changes.
+    @Test
     public void testViewUpdatesFromField() {
         final BasicFieldCheckboxView view = makeFieldCheckboxView();
-        assertEquals(mFieldCheckbox.isChecked(), view.isChecked());
+        assertThat(view.isChecked()).isEqualTo(mFieldCheckbox.isChecked());
 
         mFieldCheckbox.setChecked(true);
-        assertTrue(view.isChecked());
+        assertThat(view.isChecked()).isTrue();
 
         mFieldCheckbox.setChecked(false);
-        assertFalse(view.isChecked());
+        assertThat(view.isChecked()).isFalse();
 
         mFieldCheckbox.setChecked(false);
-        assertFalse(view.isChecked());
+        assertThat(view.isChecked()).isFalse();
     }
 
     @NonNull

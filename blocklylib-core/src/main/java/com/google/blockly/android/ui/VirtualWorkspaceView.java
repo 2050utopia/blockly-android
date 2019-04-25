@@ -19,7 +19,6 @@ import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Rect;
 import android.support.annotation.NonNull;
-import android.support.v4.view.MotionEventCompat;
 import android.util.AttributeSet;
 import android.util.Log;
 import android.view.GestureDetector;
@@ -28,6 +27,7 @@ import android.view.ScaleGestureDetector;
 import android.view.inputmethod.InputMethodManager;
 
 import com.google.blockly.android.R;
+import com.google.blockly.android.ZoomBehavior;
 
 /**
  * Virtual view of a {@link WorkspaceView}.
@@ -52,6 +52,7 @@ public class VirtualWorkspaceView extends NonPropagatingViewGroup {
     private static final int INIT_ZOOM_SCALES_INDEX = 2;
 
     protected boolean mScrollable = true;
+    protected boolean mScalable = true;
 
     private final ViewPoint mPanningStart = new ViewPoint();
 
@@ -159,13 +160,22 @@ public class VirtualWorkspaceView extends NonPropagatingViewGroup {
         return mScrollable;
     }
 
+    public void setDrawGrid(boolean drawGrid){
+        mDrawGrid = drawGrid;
+    }
+
+    public void setZoomBehavior(ZoomBehavior zoomBehavior){
+        setScrollable(zoomBehavior.isScrollEnabled());
+        setScalable(zoomBehavior.isPinchZoomEnabled());
+    }
+
     /**
      * Configures whether the user can scroll the workspace by dragging.  If scrolling is disabled,
      * the workspace will reset to 0,0 in the top right hand corner.
      *
      * @param scrollable Allow scrolling if true. Otherwise, disable it.
      */
-    public void setScrollable(boolean scrollable) {
+    protected void setScrollable(boolean scrollable) {
         if (scrollable == mScrollable) {
             return;
         }
@@ -173,6 +183,21 @@ public class VirtualWorkspaceView extends NonPropagatingViewGroup {
         setHorizontalScrollBarEnabled(mScrollable);
         setVerticalScrollBarEnabled(mScrollable);
         if (!mScrollable) {
+            resetView();
+        }
+    }
+
+    /**
+     * Configures whether the user can scale the workspace by touch events.
+     *
+     * @param scalable Allow scalability if true. Otherwise, disable it.
+     */
+    protected void setScalable(boolean scalable){
+        if(mScalable == scalable){
+            return;
+        }
+        mScalable = scalable;
+        if(!scalable) {
             resetView();
         }
     }
@@ -219,14 +244,16 @@ public class VirtualWorkspaceView extends NonPropagatingViewGroup {
 
     @Override
     public boolean onTouchEvent(MotionEvent event) {
-        mScaleGestureDetector.onTouchEvent(event);
-        if (mScaleGestureDetector.isInProgress()) {
-            // If the scale gesture detector is handling a scale-and-pan gesture, then exit here
-            // since otherwise we would also be generating dragging events below.
-            return true;
+        if(mScalable && mScaleGestureDetector != null) {
+            mScaleGestureDetector.onTouchEvent(event);
+            if (mScaleGestureDetector.isInProgress()) {
+                // If the scale gesture detector is handling a scale-and-pan gesture, then exit here
+                // since otherwise we would also be generating dragging events below.
+                return true;
+            }
         }
 
-        final int action = MotionEventCompat.getActionMasked(event);
+        final int action = event.getActionMasked();
 
         switch (action) {
             case MotionEvent.ACTION_DOWN: {
@@ -234,11 +261,11 @@ public class VirtualWorkspaceView extends NonPropagatingViewGroup {
                 mImeManager.hideSoftInputFromWindow(getWindowToken(), 0);
 
                 if (mScrollable) {
-                    final int pointerIdx = MotionEventCompat.getActionIndex(event);
-                    mPanningPointerId = MotionEventCompat.getPointerId(event, pointerIdx);
+                    final int pointerIdx = event.getActionIndex();
+                    mPanningPointerId = event.getPointerId(pointerIdx);
                     mPanningStart.set(
-                            (int) MotionEventCompat.getX(event, pointerIdx),
-                            (int) MotionEventCompat.getY(event, pointerIdx));
+                            (int) event.getX(pointerIdx),
+                            (int) event.getY(pointerIdx));
                     mOriginalScrollX = getScrollX();
                     mOriginalScrollY = getScrollY();
                 }
@@ -247,7 +274,7 @@ public class VirtualWorkspaceView extends NonPropagatingViewGroup {
             case MotionEvent.ACTION_MOVE: {
                 if (mPanningPointerId != MotionEvent.INVALID_POINTER_ID) {
                     final int pointerIdx =
-                            MotionEventCompat.findPointerIndex(event, mPanningPointerId);
+                            event.findPointerIndex(mPanningPointerId);
                     if (pointerIdx == -1) {
                         // TODO: (#319) remove when we clean up multi-touch handling.
                         Log.w(TAG, "Got an invalid pointer idx for the panning pointer.");
@@ -255,9 +282,9 @@ public class VirtualWorkspaceView extends NonPropagatingViewGroup {
                     }
                     scrollTo(
                             mOriginalScrollX + mPanningStart.x -
-                                    (int) MotionEventCompat.getX(event, pointerIdx),
+                                    (int) event.getX(pointerIdx),
                             mOriginalScrollY + mPanningStart.y -
-                                    (int) MotionEventCompat.getY(event, pointerIdx));
+                                    (int) event.getY(pointerIdx));
                     return true;
                 } else {
                     return false;
@@ -265,8 +292,8 @@ public class VirtualWorkspaceView extends NonPropagatingViewGroup {
             }
             case MotionEvent.ACTION_POINTER_UP: {
                 // Some pointer went up - check whether it was the one used for panning.
-                final int pointerIdx = MotionEventCompat.getActionIndex(event);
-                final int pointerId = MotionEventCompat.getPointerId(event, pointerIdx);
+                final int pointerIdx = event.getActionIndex();
+                final int pointerId = event.getPointerId(pointerIdx);
                 if (pointerId != mPanningPointerId) {
                     return false;
                 }
@@ -324,9 +351,9 @@ public class VirtualWorkspaceView extends NonPropagatingViewGroup {
         // below.
         final int offsetX = getScrollX();
         final int offsetY = getScrollY();
-        mWorkspaceView.layout(
-                (int) ((l / mViewScale) + offsetX), (int) ((t / mViewScale) + offsetY),
-                (int) ((r / mViewScale) + offsetX), (int) ((b / mViewScale) + offsetY));
+        mWorkspaceView.layout((offsetX), (offsetY),
+                (int) ((getMeasuredWidth() / mViewScale) + offsetX),
+                (int) ((getMeasuredHeight() / mViewScale) + offsetY));
     }
 
     @Override
@@ -561,6 +588,18 @@ public class VirtualWorkspaceView extends NonPropagatingViewGroup {
 
     public int getGridSpacing() {
         return mGridRenderer.getGridSpacing();
+    }
+
+    public void setGridSpacing(int gridSpacing) {
+        mGridRenderer.setGridSpacing(gridSpacing);
+    }
+
+    public void setGridColor(int gridColor) {
+        mGridRenderer.setGridColor(gridColor);
+    }
+
+    public void setGridDotRadius(int gridDotRadius) {
+        mGridRenderer.setGridDotRadius(gridDotRadius);
     }
 
     private class TapGestureListener extends GestureDetector.SimpleOnGestureListener {

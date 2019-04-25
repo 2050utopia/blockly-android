@@ -23,6 +23,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewParent;
 
+import com.google.blockly.android.control.ConnectionManager;
 import com.google.blockly.model.Block;
 import com.google.blockly.model.Connection;
 import com.google.blockly.model.Input;
@@ -44,14 +45,14 @@ public interface BlockView {
     /** @see View#getParent() */
     ViewParent getParent();
 
+    /** @see View#getX() */
+    float getX();
+
+    /** @see View#getY() */
+    float getY();
+
     /** @see View#getWidth() */
     int getWidth();
-
-    /**
-     * @see View#getLocationOnScreen(int[])
-     * @param location an array of two integers in which to hold the coordinates
-     */
-    void getLocationOnScreen(@Size(2) int[] location);
 
     /**
      * @return The closest view tree ancestor that is a BlockGroup.
@@ -120,4 +121,8 @@ public interface BlockView {
      */
     @Nullable
     InputView getInputView(int n);
+
+    ConnectionManager getConnectionManager();
+
+    BlockTouchHandler getTouchHandler();
 }

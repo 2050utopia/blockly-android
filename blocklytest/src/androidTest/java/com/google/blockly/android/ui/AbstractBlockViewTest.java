@@ -16,59 +16,57 @@
 package com.google.blockly.android.ui;
 
 import android.support.annotation.NonNull;
-import android.test.suitebuilder.annotation.SmallTest;
 import android.view.MotionEvent;
 
-import com.google.blockly.android.MockitoAndroidTestCase;
-import com.google.blockly.android.R;
+import com.google.blockly.android.BlocklyTestCase;
+import com.google.blockly.android.control.BlocklyController;
 import com.google.blockly.android.control.ConnectionManager;
 import com.google.blockly.model.Block;
 import com.google.blockly.model.BlockFactory;
+import com.google.blockly.model.BlockTemplate;
 
-import org.mockito.Mock;
+import org.junit.Before;
+import org.junit.Test;
 
 import java.util.ArrayList;
 
+import static com.google.common.truth.Truth.assertThat;
+import static org.mockito.Mockito.mock;
 
 /**
  * Tests for {@link AbstractBlockView}.
  */
-@SmallTest
-public class AbstractBlockViewTest extends MockitoAndroidTestCase {
+public class AbstractBlockViewTest extends BlocklyTestCase {
 
-    private BlockFactory mBlockFactory;
     private Block mEmptyBlock;
 
-    @Mock
+    private BlocklyController mMockController;
     private ConnectionManager mMockConnectionManager;
-
-    @Mock
-    private WorkspaceView mMockWorkspaceView;
-
-
-    @Mock
     private WorkspaceHelper mMockHelper;
-
-    @Mock
     private BlockViewFactory mMockViewFactory;
 
-    @Mock
-    private BlockGroup mMockBlockGroup;
+    @Before
+     public void setUp() throws Exception {
+        mMockController = mock(BlocklyController.class);
+        mMockConnectionManager = mock(ConnectionManager.class);
+        mMockHelper = mock(WorkspaceHelper.class);
+        mMockViewFactory = mock(BlockViewFactory.class);
 
-    @Override
-    public void setUp() throws Exception {
-        super.setUp();
+        BlockFactory factory = new BlockFactory();
 
-        mBlockFactory = new BlockFactory(getContext(), new int[]{R.raw.test_blocks});
-        mEmptyBlock = mBlockFactory.obtainBlock("empty_block", "fake_id");
+        factory.addJsonDefinitions(getContext().getAssets()
+                .open("default/test_blocks.json"));
+        factory.setController(mMockController);
+        mEmptyBlock = factory.obtainBlockFrom(new BlockTemplate().ofType("empty_block"));
     }
 
     // Verify correct object state after construction.
+    @Test
     public void testConstructor() {
         final BlockView blockView = makeBlockView(mEmptyBlock);
 
         // Verify Block and BlockView are linked both ways.
-        assertSame(mEmptyBlock, blockView.getBlock());
+        assertThat(mEmptyBlock).isSameAs(blockView.getBlock());
     }
 
     // Make a BlockView for the given Block and default mock objects otherwise.
@@ -79,6 +77,11 @@ public class AbstractBlockViewTest extends MockitoAndroidTestCase {
 
             @Override
             protected boolean hitTest(MotionEvent event) {
+                return false;
+            }
+
+            @Override
+            protected boolean coordinatesAreOnBlock(int x, int y) {
                 return false;
             }
 
@@ -94,6 +97,11 @@ public class AbstractBlockViewTest extends MockitoAndroidTestCase {
 
             @Override
             protected void onLayout(boolean changed, int l, int t, int r, int b) {
+                // Fake. Do nothing.
+            }
+
+            @Override
+            protected void onBlockUpdated(@Block.UpdateState int updateMask) {
                 // Fake. Do nothing.
             }
         };

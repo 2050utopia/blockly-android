@@ -31,7 +31,9 @@ import com.google.blockly.android.AbstractBlocklyActivity;
 import com.google.blockly.android.BlocklySectionsActivity;
 import com.google.blockly.android.codegen.CodeGenerationRequest;
 import com.google.blockly.android.control.BlocklyController;
+import com.google.blockly.model.DefaultBlocks;
 import com.google.blockly.util.JavascriptUtil;
+import com.google.blockly.utils.BlockLoadingException;
 
 import java.io.IOException;
 import java.util.Arrays;
@@ -44,14 +46,16 @@ import java.util.List;
 public class TurtleActivity extends BlocklySectionsActivity {
     private static final String TAG = "TurtleActivity";
 
-    public static final String SAVED_WORKSPACE_FILENAME = "turtle_workspace.xml";
+    private static final String SAVE_FILENAME = "turtle_workspace.xml";
+    private static final String AUTOSAVE_FILENAME = "turtle_workspace_temp.xml";
+
     static final List<String> TURTLE_BLOCK_DEFINITIONS = Arrays.asList(
-            "default/logic_blocks.json",
-            "default/loop_blocks.json",
-            "default/math_blocks.json",
-            "default/variable_blocks.json",
-            "default/colour_blocks.json",
-            "default/text_blocks.json",
+            DefaultBlocks.COLOR_BLOCKS_PATH,
+            DefaultBlocks.LOGIC_BLOCKS_PATH,
+            DefaultBlocks.LOOP_BLOCKS_PATH,
+            DefaultBlocks.MATH_BLOCKS_PATH,
+            DefaultBlocks.TEXT_BLOCKS_PATH,
+            DefaultBlocks.VARIABLE_BLOCKS_PATH,
             "turtle/turtle_blocks.json"
     );
     static final List<String> TURTLE_BLOCK_GENERATORS = Arrays.asList(
@@ -96,12 +100,12 @@ public class TurtleActivity extends BlocklySectionsActivity {
 
     @Override
     public void onLoadWorkspace() {
-        loadWorkspaceFromAppDir(SAVED_WORKSPACE_FILENAME);
+        mBlocklyActivityHelper.loadWorkspaceFromAppDirSafely(SAVE_FILENAME);
     }
 
     @Override
     public void onSaveWorkspace() {
-        saveWorkspaceToAppDir(SAVED_WORKSPACE_FILENAME);
+        mBlocklyActivityHelper.saveWorkspaceToAppDirSafely(SAVE_FILENAME);
     }
 
     @Override
@@ -126,11 +130,12 @@ public class TurtleActivity extends BlocklySectionsActivity {
         }
 
         if (loadWorkspace) {
+            String assetFilename = "turtle/demo_workspaces/" + filename;
             try {
-                controller.loadWorkspaceContents(activity.getAssets().open(
-                        "turtle/demo_workspaces/" + filename));
-            } catch (IOException e) {
-                Log.d(TAG, "Couldn't load workspace from assets");
+                controller.loadWorkspaceContents(activity.getAssets().open(assetFilename));
+            } catch (IOException | BlockLoadingException e) {
+                throw new IllegalStateException(
+                        "Couldn't load demo workspace from assets: " + assetFilename, e);
             }
             addDefaultVariables(controller);
             return true;
@@ -221,5 +226,27 @@ public class TurtleActivity extends BlocklySectionsActivity {
         controller.addVariable("lollipop");
         controller.addVariable("kitkat");
         controller.addVariable("android");
+    }
+
+    /**
+     * Optional override of the save path, since this demo Activity has multiple Blockly
+     * configurations.
+     * @return Workspace save path used by this Activity.
+     */
+    @Override
+    @NonNull
+    protected String getWorkspaceSavePath() {
+        return SAVE_FILENAME;
+    }
+
+    /**
+     * Optional override of the auto-save path, since this demo Activity has multiple Blockly
+     * configurations.
+     * @return Workspace auto-save path used by this Activity.
+     */
+    @Override
+    @NonNull
+    protected String getWorkspaceAutosavePath() {
+        return AUTOSAVE_FILENAME;
     }
 }

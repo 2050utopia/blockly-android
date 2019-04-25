@@ -27,7 +27,7 @@ import android.graphics.drawable.Drawable;
 import android.graphics.drawable.NinePatchDrawable;
 import android.support.annotation.NonNull;
 import android.support.annotation.Nullable;
-import android.view.MotionEvent;
+import android.util.Log;
 
 import com.google.blockly.android.control.ConnectionManager;
 import com.google.blockly.android.ui.Dragger;
@@ -35,9 +35,10 @@ import com.google.blockly.android.ui.AbstractBlockView;
 import com.google.blockly.android.ui.BlockTouchHandler;
 import com.google.blockly.android.ui.ViewPoint;
 import com.google.blockly.android.ui.WorkspaceHelper;
-import com.google.blockly.android.ui.WorkspaceView;
 import com.google.blockly.model.Block;
 import com.google.blockly.model.Input;
+
+import org.json.JSONObject;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -47,10 +48,20 @@ import java.util.List;
  */
 @SuppressLint("ViewConstructor")
 public class BlockView extends AbstractBlockView<InputView> {
+    private static final String TAG = "Vertical BlockView";
     private static final boolean DEBUG = false;
 
     private static final float SHADOW_SATURATION_MULTIPLIER = 0.4f;
     private static final float SHADOW_VALUE_MULTIPLIER = 1.2f;
+
+    private static final String STYLE_KEY_HAT = "hat";
+    private static final String HAT_CAP = "cap";
+
+    private static final int UPDATES_THAT_CAUSE_RELOAD_SHAPE_ASSETS =
+            Block.UPDATE_COLOR | Block.UPDATE_IS_DISABLED | Block.UPDATE_IS_SHADOW;
+    private static final int UPDATES_THAT_MIGHT_MODIFY_CHILDREN_OR_SIZE =
+            Block.UPDATE_INPUTS_FIELDS_CONNECTIONS | Block.UPDATE_COMMENT
+                    | Block.UPDATE_INPUTS_INLINE | Block.UPDATE_IS_COLLAPSED | Block.UPDATE_WARNING;
 
     // TODO(#86): Determine from 9-patch measurements.
     private final int mMinBlockWidth;
@@ -81,11 +92,8 @@ public class BlockView extends AbstractBlockView<InputView> {
     @Nullable private Rect mNextFillRect = null;
     private ColorFilter mBlockColorFilter;
     private final Paint mFillPaint = new Paint();
-    private final boolean mUseHat;
+    private final boolean mUseCap;
     private int mBlockTopPadding;
-
-    // Keeps track of if the current set of touch events had started on this block
-    private boolean mHasHit = false;
 
     private final Rect tempRect = new Rect(); // Only use in main thread functions.
 
@@ -115,7 +123,7 @@ public class BlockView extends AbstractBlockView<InputView> {
         mTouchHandler = touchHandler;
         mPatchManager = factory.getPatchManager();  // Shortcut.
         mMinBlockWidth = (int) context.getResources().getDimension(R.dimen.min_block_width);
-        mUseHat = factory.isBlockHatsEnabled();
+        mUseCap = isBlockCapEnabled(factory, block);
 
         setClickable(true);
         setFocusable(true);
@@ -156,7 +164,11 @@ public class BlockView extends AbstractBlockView<InputView> {
     // TODO(#144): Move to AbstractBlockView, using abstract methods for calls. After #133
     @Override
     public void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
-        mBlockTopPadding = mPatchManager.computeBlockTopPadding(mBlock);
+        mBlockTopPadding = mPatchManager.computeBlockTopPadding(this);
+
+        if (mIconsView != null) {
+            mIconsView.measure(widthMeasureSpec, heightMeasureSpec);
+        }
 
         if (getBlock().getInputsInline()) {
             measureInlineInputs(widthMeasureSpec, heightMeasureSpec);
@@ -208,6 +220,13 @@ public class BlockView extends AbstractBlockView<InputView> {
             xFrom = mBlockViewSize.x - xFrom;
         }
 
+        if (mIconsView != null) {
+            int iconsLeft = rtl ? xFrom - mIconsView.getWidth() : xFrom;
+            mIconsView.layout(iconsLeft, mBlockTopPadding,
+                    iconsLeft + mIconsView.getMeasuredWidth(),
+                    mBlockTopPadding + mIconsView.getMeasuredHeight());
+        }
+
         for (int i = 0; i < mInputViews.size(); i++) {
             int rowTop = mInputLayoutOrigins.get(i).y;
 
@@ -234,75 +253,92 @@ public class BlockView extends AbstractBlockView<InputView> {
     }
 
     /**
-     * Test whether a {@link MotionEvent} event is (approximately) hitting a visible part of this
-     * view.
-     * <p/>
-     * This is used to determine whether the event should be handled by this view, e.g., to activate
-     * dragging or to open a context menu. Since the actual block interactions are implemented at
-     * the {@link WorkspaceView} level, there is no need to store the event data in this class.
-     *
-     * @param event The {@link MotionEvent} to check.
-     *
-     * @return True if the coordinate of the motion event is on the visible, non-transparent part of
-     * this view; false otherwise.
+     * @return Whether this block is a start block rendered with a rounded "cap" styled hat.
      */
-    // TODO(#143): Move some of this to AbstractBlockView (state, subviews, etc.)
+    public boolean hasCap() {
+        return mUseCap;
+    }
+
+    /**
+     * Called when a block's inputs, fields, comment, or mutator is/are updated, and thus the
+     * shape may have changed.
+     */
     @Override
-    protected boolean hitTest(MotionEvent event) {
-        int action = event.getAction();
-        if (mHasHit && action == MotionEvent.ACTION_MOVE) {
-            // Events that started in this block continue to count as being in this block
-            return true;
+    protected void onBlockUpdated(@Block.UpdateState int updateMask) {
+        if ((updateMask & UPDATES_THAT_MIGHT_MODIFY_CHILDREN_OR_SIZE) != 0) {
+            mFactory.rebuildBlockView(this);
         }
-        if (action == MotionEvent.ACTION_CANCEL || action == MotionEvent.ACTION_UP) {
-            boolean wasHit = mHasHit;
-            mHasHit = false;
-            return wasHit;
+    }
+
+    /**
+     * @return true if coordinates provided are on this block or it's inputs.
+     */
+    @Override
+    protected boolean coordinatesAreOnBlock(int x, int y) {
+        if (!isInHorizontalRangeOfBlock(x)) {
+            return false;
         }
-        final int eventX = (int) event.getX();
-        final int eventY = (int) event.getY();
-
-        // Do the exact same thing for RTL and LTR, with reversed left and right block bounds. Note
-        // that the bounds of each InputView include any connected child blocks, so in RTL mode,
-        // the left-hand side of the input fields must be obtained from the right-hand side of the
-        // input and the field layout width.
-        if (mHelper.useRtl()) {
-            // First check whether event is in the general horizontal range of the block outline
-            // (minus children) and exit if it is not.
-            final int blockEnd = mBlockViewSize.x - mOutputConnectorMargin;
-            final int blockBegin = blockEnd - mBlockContentWidth;
-            if (eventX < blockBegin || eventX > blockEnd) {
-                return false;
-            }
-
-            // In the ballpark - now check whether event is on a field of any of this block's
-            // inputs. If it is, then the event belongs to this BlockView, otherwise it does not.
-            for (int i = 0; i < mInputViews.size(); ++i) {
-                final InputView inputView = mInputViews.get(i);
-                if (inputView.isOnFields(
-                        eventX - (inputView.getRight() - inputView.getFieldLayoutWidth()),
-                        eventY - inputView.getTop())) {
-                    mHasHit = true;
-                    return true;
-                }
-            }
-        } else {
-            final int blockBegin = mOutputConnectorMargin;
-            final int blockEnd = mBlockContentWidth;
-            if (eventX < blockBegin || eventX > blockEnd) {
-                return false;
-            }
-
-            for (int i = 0; i < mInputViews.size(); ++i) {
-                final InputView inputView = mInputViews.get(i);
-                if (inputView.isOnFields(
-                        eventX - inputView.getLeft(), eventY - inputView.getTop())) {
-                    mHasHit = true;
-                    return true;
-                }
+        for (Rect rect : mFillRects) {
+            if (rect.contains(x, y)) {
+                return true;
             }
         }
         return false;
+    }
+
+    /**
+     * Reads the configuration and style to determine if the block has a "cap" style hat.
+     * Currently, a cap (rounded top) is the only type of hat supported.
+     * @param factory The view factory.
+     * @param block The block.
+     * @return Whether the block should have a cap.
+     */
+    protected boolean isBlockCapEnabled(VerticalBlockViewFactory factory, Block block) {
+        // Are hat enabled globally for all start blocks? (Older config.)
+        if (factory.isBlockHatsEnabled()) {
+            return true;
+        }
+        JSONObject style = block.getStyle();
+        if (style == null) {
+            return false;
+        }
+        String hatStyle = style.optString(STYLE_KEY_HAT);
+        if (hatStyle != null && hatStyle.equalsIgnoreCase(HAT_CAP)) {
+            return true;
+        } else {
+            Log.w(TAG, "Unrecognized hat style: " + hatStyle);
+            return false;
+        }
+    }
+
+    /**
+     * @return if the event has occurred in the horizontal range of the block.
+     */
+    private boolean isInHorizontalRangeOfBlock(int x) {
+        int blockEnd;
+        int blockBegin;
+
+        if (mHelper.useRtl()) {
+            blockEnd = mBlockViewSize.x - mOutputConnectorMargin;
+            blockBegin = blockEnd - mBlockContentWidth;
+        } else {
+            blockEnd = mBlockContentWidth;
+            blockBegin = mOutputConnectorMargin;
+        }
+
+        return x > blockBegin && x < blockEnd;
+    }
+
+    /**
+     * The bounds of each InputView include any connected child blocks, so in RTL mode,
+     * the left-hand side of the input fields must be obtained from the right-hand side of the
+     * input and the field layout width.
+     */
+    private int getXOffset(boolean useRtl, InputView inputView) {
+        if (useRtl) {
+            return inputView.getRight() - inputView.getFieldLayoutWidth();
+        }
+        return inputView.getLeft();
     }
 
     /**
@@ -361,6 +397,8 @@ public class BlockView extends AbstractBlockView<InputView> {
      */
     private void measureInlineInputs(int widthMeasureSpec, int heightMeasureSpec) {
         int inputViewsSize = mInputViews.size();
+        int firstLineMinHeight = mIconsView == null ? 0 : mIconsView.getMeasuredHeight();
+        int firstLineOffset = mIconsView == null ? 0 : mIconsView.getMeasuredWidth();
 
         // First pass - measure all fields and inputs; compute maximum width of fields and children
         // over all Statement inputs.
@@ -374,14 +412,18 @@ public class BlockView extends AbstractBlockView<InputView> {
                         Math.max(mMaxStatementFieldsWidth, inputView.getTotalFieldWidth());
                 maxStatementChildWidth =
                         Math.max(maxStatementChildWidth, inputView.getTotalChildWidth());
+                if (i == 0) {
+                    mMaxStatementFieldsWidth += firstLineOffset;
+                    maxStatementChildWidth += firstLineOffset;
+                }
             }
         }
 
         // Second pass - compute layout positions and sizes of all inputs.
-        int rowLeft = 0;
+        int rowLeft = firstLineOffset;
         int rowTop = 0;
 
-        int rowHeight = 0;
+        int rowHeight = firstLineMinHeight;
         int maxRowWidth = 0;
 
         mInlineRowWidth.clear();
@@ -398,15 +440,23 @@ public class BlockView extends AbstractBlockView<InputView> {
                 }
 
                 // Force all Statement inputs to have the same field width.
-                inputView.setFieldLayoutWidth(mMaxStatementFieldsWidth);
+                if (i == 0) {
+                    inputView.setFieldLayoutWidth(mMaxStatementFieldsWidth - firstLineOffset);
+                } else {
+                    inputView.setFieldLayoutWidth(mMaxStatementFieldsWidth);
+                }
 
                 // New row BEFORE each Statement input.
                 mInlineRowWidth.add(Math.max(rowLeft,
                         mMaxStatementFieldsWidth + mPatchManager.mStatementInputIndent));
 
-                rowTop += rowHeight;
-                rowHeight = 0;
-                rowLeft = 0;
+                // For the very first row don't reset the values before placing the statement.
+                // This will allow the icons to be placed left of the statement.
+                if (i != 0) {
+                    rowTop += rowHeight;
+                    rowHeight = 0;
+                    rowLeft = 0;
+                }
             }
 
             mInputLayoutOrigins.get(i).set(rowLeft, rowTop);
@@ -502,6 +552,8 @@ public class BlockView extends AbstractBlockView<InputView> {
      */
     private void measureExternalInputs(int widthMeasureSpec, int heightMeasureSpec) {
         int maxInputFieldsWidth = mMinBlockWidth;
+        int firstLineMinHeight = mIconsView == null ? 0 : mIconsView.getMeasuredHeight();
+        int firstLineOffset = mIconsView == null ? 0 : mIconsView.getMeasuredWidth();
         // Initialize max Statement width as zero so presence of Statement inputs can be determined
         // later; apply minimum size after that.
         mMaxStatementFieldsWidth = 0;
@@ -518,12 +570,18 @@ public class BlockView extends AbstractBlockView<InputView> {
                 case Input.TYPE_VALUE: {
                     maxInputChildWidth =
                             Math.max(maxInputChildWidth, inputView.getTotalChildWidth());
+                    if (i == 0) {
+                        maxInputChildWidth += firstLineOffset;
+                    }
                     // fall through
                 }
                 default:
                 case Input.TYPE_DUMMY: {
                     maxInputFieldsWidth =
                             Math.max(maxInputFieldsWidth, inputView.getTotalFieldWidth());
+                    if (i == 0) {
+                        maxInputFieldsWidth += firstLineOffset;
+                    }
                     break;
                 }
                 case Input.TYPE_STATEMENT: {
@@ -531,6 +589,10 @@ public class BlockView extends AbstractBlockView<InputView> {
                             Math.max(mMaxStatementFieldsWidth, inputView.getTotalFieldWidth());
                     maxStatementChildWidth =
                             Math.max(maxStatementChildWidth, inputView.getTotalChildWidth());
+                    if (i == 0) {
+                        mMaxStatementFieldsWidth += firstLineOffset;
+                        maxStatementChildWidth += firstLineOffset;
+                    }
                     break;
                 }
             }
@@ -553,19 +615,25 @@ public class BlockView extends AbstractBlockView<InputView> {
             if (inputType == Input.TYPE_STATEMENT) {
                 // If the first input is a Statement, add vertical space above to draw top of
                 // connector just below block top boundary.
+                // Also, subtract the icons offset from the first row's width.
                 if (i == 0) {
                     rowTop += mBlockTopPadding;
+                    inputView.setFieldLayoutWidth(mMaxStatementFieldsWidth - firstLineOffset);
+                } else {
+                    // Force all Statement inputs to have the same field width.
+                    inputView.setFieldLayoutWidth(mMaxStatementFieldsWidth);
                 }
-
-                // Force all Statement inputs to have the same field width.
-                inputView.setFieldLayoutWidth(mMaxStatementFieldsWidth);
             } else {
                 // Force all Dummy and Value inputs to have the same field width.
-                inputView.setFieldLayoutWidth(maxInputFieldsWidth);
+                if (i == 0) {
+                    inputView.setFieldLayoutWidth(maxInputFieldsWidth - firstLineOffset);
+                } else {
+                    inputView.setFieldLayoutWidth(maxInputFieldsWidth);
+                }
             }
             inputView.measure(widthMeasureSpec, heightMeasureSpec);
 
-            mInputLayoutOrigins.get(i).set(0, rowTop);
+            mInputLayoutOrigins.get(i).set(i == 0 ? firstLineOffset : 0, rowTop);
 
             // If the last input is a Statement, add vertical space below to draw bottom of
             // connector just above block top boundary.
@@ -574,7 +642,11 @@ public class BlockView extends AbstractBlockView<InputView> {
             }
 
             // The block height is the sum of all the row heights.
-            rowTop += inputView.getMeasuredHeight();
+            if (i == 0) {
+                rowTop += Math.max(inputView.getMeasuredHeight(), firstLineMinHeight);
+            } else {
+                rowTop += inputView.getMeasuredHeight();
+            }
         }
 
         // Block content width is the width of the longest row.
@@ -659,6 +731,19 @@ public class BlockView extends AbstractBlockView<InputView> {
         int yTop = 0;
         final NinePatchDrawable topStartDrawable = addTopLeftPatch(isShadow, xTo, yTop);
 
+        // Add a background rect for the icons view if it exists
+        if (mIconsView != null) {
+            int firstInputStart = 0;
+            int firstRowHeight = 0;
+            if (mInputCount != 0) {
+                firstInputStart = mInputLayoutOrigins.get(0).x;
+                firstRowHeight = mInputViews.get(0).getRowHeight();
+            }
+            int rectWidth = Math.max(mIconsView.getWidth(), firstInputStart);
+            int rectHeight = Math.max(mIconsView.getHeight(), firstRowHeight);
+            fillRectBySize(xFrom, mIconsView.getTop(), rectWidth, rectHeight);
+        }
+
         // Position inputs and connectors.
         mInputConnectionHighlightPatches.clear();
         mInputConnectionHighlightPatches.ensureCapacity(mInputCount);
@@ -674,14 +759,16 @@ public class BlockView extends AbstractBlockView<InputView> {
             fillRectBySize(xFrom + inputLayoutOrigin.x, inputLayoutOrigin.y,
                     inputView.getFieldLayoutWidth(), inputView.getRowHeight());
 
-            switch (inputView.getInput().getType()) {
+            int inputType = inputView.getInput().getType();
+            boolean isLastInput = (i + 1 == mInputCount);
+            boolean nextIsStatement = !isLastInput
+                    && mInputViews.get(i + 1).getInput().getType() == Input.TYPE_STATEMENT;
+            boolean isEndOfLine = !mBlock.getInputsInline() || isLastInput
+                    || nextIsStatement;
+
+            switch (inputType) {
                 default:
                 case Input.TYPE_DUMMY: {
-                    boolean isLastInput = (i + 1 == mInputCount);
-                    boolean nextIsStatement = !isLastInput
-                            && mInputViews.get(i + 1).getInput().getType() == Input.TYPE_STATEMENT;
-                    boolean isEndOfLine = !mBlock.getInputsInline() || isLastInput
-                            || nextIsStatement;
                     if (isEndOfLine) {
                         addDummyBoundaryPatch(isShadow, xTo, inputView, inputLayoutOrigin);
                     }
@@ -717,6 +804,16 @@ public class BlockView extends AbstractBlockView<InputView> {
                     break;
                 }
             }
+            // If there's leftover space on the right fill it in with a rect
+            if (inputType != Input.TYPE_STATEMENT && isEndOfLine && mBlock.getInputsInline()) {
+                int start = inputLayoutOrigin.x + inputView.getMeasuredWidth();
+                int width = xTo - start;
+                if (width > 0) {
+                    fillRectBySize(start, inputLayoutOrigin.y, width, inputView.getRowHeight());
+                }
+            }
+
+
         }
 
         // Select and position correct patch for bottom and left-hand side of the block, including
@@ -793,7 +890,7 @@ public class BlockView extends AbstractBlockView<InputView> {
                     mPatchManager.getPatchDrawable(R.drawable.top_start_output_border);
             mOutputConnectorHighlightPatch =
                     mPatchManager.getPatchDrawable(R.drawable.top_start_output_connection);
-        } else if (mUseHat) {
+        } else if (mUseCap) {
             topStartDrawable = getColoredPatchDrawable(
                     isShadow ? R.drawable.top_start_hat_shadow : R.drawable.top_start_hat);
             topStartBorderDrawable =

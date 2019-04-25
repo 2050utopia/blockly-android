@@ -15,9 +15,11 @@
 
 package com.google.blockly.android.ui.fieldview;
 
-import android.content.ClipDescription;
 import android.content.Context;
+import android.content.res.Configuration;
 import android.graphics.Rect;
+import android.os.Build;
+import android.support.v7.widget.AppCompatEditText;
 import android.text.Editable;
 import android.text.InputType;
 import android.text.TextUtils;
@@ -26,22 +28,36 @@ import android.text.method.DigitsKeyListener;
 import android.util.AttributeSet;
 import android.util.Log;
 import android.view.DragEvent;
-import android.widget.EditText;
 
-import com.google.blockly.android.ui.WorkspaceView;
+import com.google.blockly.android.ui.WorkspaceHelper;
 import com.google.blockly.model.Field;
 import com.google.blockly.model.FieldNumber;
+
+import java.text.DecimalFormat;
+import java.text.DecimalFormatSymbols;
+import java.text.NumberFormat;
+import java.text.ParseException;
+import java.util.Locale;
 
 /**
  * A basic UI for {@link FieldNumber}.
  */
-public class BasicFieldNumberView extends EditText implements FieldView {
+public class BasicFieldNumberView extends AppCompatEditText implements FieldView {
     private static final String TAG = "BasicFieldNumberView";
+
+    protected DecimalFormatSymbols mLocalizedDecimalSymbols;
+    protected String mLocalizedGroupingSeparator;
+    protected NumberFormat mLocalizedNumberParser;
 
     protected boolean mAllowExponent = true;
     protected boolean mTextIsValid = false;
 
     private boolean mIsUpdatingField = false;
+
+    private double mLatestMin = FieldNumber.NO_CONSTRAINT;
+    private double mLatestMax = FieldNumber.NO_CONSTRAINT;
+    private double mLatestPrecision = FieldNumber.NO_CONSTRAINT;
+    private NumberFormat mLocalizedNumberFormat;
 
     private final TextWatcher mWatcher = new TextWatcher() {
         @Override
@@ -56,7 +72,19 @@ public class BasicFieldNumberView extends EditText implements FieldView {
                 try {
                     mIsUpdatingField = true;
                     if (text.length() > 0) {
-                        setTextValid(mNumberField.setFromString(text.toString()));
+                        // Attempt to parse numbers using context's locale,
+                        // ignoring the locale's grouping marker (b/c is causes parse errors).
+                        String textWithoutGrouping =
+                                text.toString().replace(mLocalizedGroupingSeparator, "");
+                        try {
+                            double newValue =
+                                    mLocalizedNumberParser.parse(textWithoutGrouping).doubleValue();
+                            mNumberField.setValue(newValue);
+                            setTextValid(true);
+                        } catch (ParseException e) {
+                            // Failed to parse intermediate
+                            setTextValid(false);
+                        }
                     } else {
                         // Empty string always overwrites value as if it was 0.
                         mNumberField.setValue(0);
@@ -69,36 +97,30 @@ public class BasicFieldNumberView extends EditText implements FieldView {
         }
     };
 
-    private final FieldNumber.Observer mFieldObserver = new FieldNumber.Observer() {
+    private final Field.Observer mFieldObserver = new Field.Observer() {
         @Override
-        public void onValueChanged(FieldNumber field, double oldValue, double newValue) {
+        public void onValueChanged(Field field, String oldStrValue, String newStrValue) {
             if (mIsUpdatingField) {
                 return;
             }
+            updateLocalizedNumberFormatIfConstraintsChanged();
             if (field != mNumberField) {  // Potential race condition if view's field changes.
                 Log.w(TAG, "Received value change from unexpected field.");
                 return;
             }
             try {
                 CharSequence text = getText();
-                try {
-                    // Because numbers can have different string representations,
-                    // only overwrite if the parsed value differs.
-                    if (TextUtils.isEmpty(text)
-                            || Double.parseDouble(text.toString()) != newValue) {
-                        setText(field.getFormattedValue());
-                    }
-                } catch (NumberFormatException e) {
-                    setText(field.getFormattedValue());
-                }
-            } catch (NumberFormatException e) {
-                setText(field.getFormattedValue());
-            }
-        }
+                Double value = mNumberField.getValue();
 
-        @Override
-        public void onConstraintsChanged(FieldNumber field) {
-            updateInputMethod();
+                // Because numbers can have different string representations,
+                // only overwrite if the parsed value differs.
+                if (TextUtils.isEmpty(text)
+                        || mLocalizedNumberParser.parse(text.toString()).doubleValue() != value) {
+                    setText(mLocalizedNumberFormat.format(mNumberField.getValue()));
+                }
+            } catch (ParseException e) {
+                setText(mLocalizedNumberFormat.format(mNumberField.getValue()));
+            }
         }
     };
 
@@ -120,6 +142,14 @@ public class BasicFieldNumberView extends EditText implements FieldView {
     @Override
     protected void onFinishInflate() {
         super.onFinishInflate();
+
+        // Get a localized, but otherwise permissive
+        mLocalizedDecimalSymbols = new DecimalFormatSymbols(getPrimaryLocale());
+        mLocalizedGroupingSeparator =
+                Character.toString(mLocalizedDecimalSymbols.getGroupingSeparator());
+        mLocalizedNumberParser =
+                new DecimalFormat("#.#", mLocalizedDecimalSymbols);
+
         addTextChangedListener(mWatcher);
         updateInputMethod();
     }
@@ -133,7 +163,8 @@ public class BasicFieldNumberView extends EditText implements FieldView {
                 // Replace empty string with value closest to zero.
                 mNumberField.setValue(0);
             }
-            setText(mNumberField.getFormattedValue());
+            updateLocalizedNumberFormatIfConstraintsChanged();
+            setText(mLocalizedNumberFormat.format(mNumberField.getValue()));
             setTextValid(true);
         }
     }
@@ -151,7 +182,8 @@ public class BasicFieldNumberView extends EditText implements FieldView {
         mNumberField = number;
         if (mNumberField != null) {
             updateInputMethod();
-            setText(mNumberField.getFormattedValue());
+            updateLocalizedNumberFormat();
+            setText(mLocalizedNumberFormat.format(mNumberField.getValue()));
             mNumberField.registerObserver(mFieldObserver);
         } else {
             setText("");
@@ -182,14 +214,9 @@ public class BasicFieldNumberView extends EditText implements FieldView {
      */
     @Override
     public boolean onDragEvent(DragEvent event) {
-        // Don't let block groups be dropped into text fields.
-        if (event.getClipDescription() != null
-            && event.getClipDescription().hasMimeType(ClipDescription.MIMETYPE_TEXT_PLAIN)
-            && event.getClipDescription().getLabel().equals(
-                WorkspaceView.BLOCK_GROUP_CLIP_DATA_LABEL)) {
+        if (WorkspaceHelper.isBlockDrag(getContext(), event)) {
             return false;
         }
-
         return super.onDragEvent(event);
     }
 
@@ -209,16 +236,45 @@ public class BasicFieldNumberView extends EditText implements FieldView {
                 allowedChars.append("e");
             }
 
-            if (mNumberField.getMinimumValue() < 0) {
+            if (!mNumberField.hasMinimum() || mNumberField.getMinimumValue() < 0) {
                 imeOptions |= InputType.TYPE_NUMBER_FLAG_SIGNED;
                 allowedChars.append("-");
             }
             if (!mNumberField.isInteger()) {
                 imeOptions |= InputType.TYPE_NUMBER_FLAG_DECIMAL;
-                allowedChars.append(".");
+                allowedChars.append(mLocalizedDecimalSymbols.getDecimalSeparator());
             }
+            allowedChars.append(mLocalizedDecimalSymbols.getGroupingSeparator());
+
             setImeOptions(imeOptions);
             setKeyListener(DigitsKeyListener.getInstance(allowedChars.toString()));
+        }
+    }
+
+    protected void updateLocalizedNumberFormat() {
+        mLatestMin = mNumberField.getMinimumValue();
+        mLatestMax = mNumberField.getMaximumValue();
+        mLatestPrecision = mNumberField.getPrecision();
+        mLocalizedNumberFormat = mNumberField.getNumberFormatForLocale(getPrimaryLocale());
+    }
+
+    protected void updateLocalizedNumberFormatIfConstraintsChanged() {
+        if (mNumberField.getMinimumValue() != mLatestMin
+                || mNumberField.getMaximumValue() != mLatestMax
+                || mNumberField.getPrecision() != mLatestPrecision) {
+            updateLocalizedNumberFormat();
+        }
+    }
+
+    /**
+     * @return The primary locale for the view's context.
+     */
+    private Locale getPrimaryLocale() {
+        Configuration configuration = getContext().getResources().getConfiguration();
+        if (Build.VERSION.SDK_INT >= 24) {
+            return configuration.getLocales().get(0);
+        } else {
+            return configuration.locale;
         }
     }
 }

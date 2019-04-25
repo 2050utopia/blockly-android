@@ -16,90 +16,98 @@
 package com.google.blockly.android.ui.fieldview;
 
 import android.support.annotation.NonNull;
-import android.support.v4.util.SimpleArrayMap;
 
-import com.google.blockly.android.MockitoAndroidTestCase;
+import com.google.blockly.android.BlocklyTestCase;
 import com.google.blockly.android.ui.WorkspaceHelper;
-import com.google.blockly.model.Field;
 import com.google.blockly.model.FieldDropdown;
 
-import org.mockito.Mock;
+import org.junit.Before;
+import org.junit.Test;
 
-import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collections;
-import java.util.List;
+
+import static com.google.common.truth.Truth.assertThat;
+import static org.mockito.Mockito.mock;
 
 /**
  * Tests for {@link BasicFieldDropdownView}.
  */
-public class BasicFieldDropdownViewTest extends MockitoAndroidTestCase {
+public class BasicFieldDropdownViewTest extends BlocklyTestCase {
 
-    @Mock
     private WorkspaceHelper mMockWorkspaceHelper;
 
     // Cannot mock final classes.
     private FieldDropdown mFieldDropdown;
     private FieldDropdown.Options mOptions;
 
-    @Override
+    @Before
     public void setUp() throws Exception {
-        super.setUp();
-
+        configureForUIThread();
+        mMockWorkspaceHelper = mock(WorkspaceHelper.class);
         mOptions = new FieldDropdown.Options(Arrays.asList(
                 new FieldDropdown.Option("Value1", "Label1"),
                 new FieldDropdown.Option("Value2", "Label2"),
                 new FieldDropdown.Option("Value3", "Label3")));
         mFieldDropdown = new FieldDropdown("FieldDropdown", mOptions);
 
-        assertNotNull(mFieldDropdown);
-        assertEquals(mOptions.size(), mFieldDropdown.getOptions().size());
+        assertThat(mFieldDropdown).isNotNull();
+        assertThat(mFieldDropdown.getOptions().size()).isEqualTo(mOptions.size());
     }
 
     // Verify object instantiation.
+    @Test
     public void testInstantiation() {
         mFieldDropdown.setSelectedIndex(2);
         final BasicFieldDropdownView view = makeFieldDropdownView();
-        assertSame(mFieldDropdown, view.getField());
-        assertEquals(mOptions.size(), view.getCount());
-        assertEquals(mFieldDropdown.getSelectedIndex(), view.getSelectedItemPosition());
-        assertEquals(mFieldDropdown.getSelectedDisplayName(), view.getSelectedItem().toString());
+        assertThat(mFieldDropdown).isSameAs(view.getField());
+        assertThat(view.getCount()).isEqualTo(mOptions.size());
+        assertThat(view.getSelectedItemPosition()).isEqualTo(mFieldDropdown.getSelectedIndex());
+        assertThat(view.getSelectedItem().toString())
+                .isEqualTo(mFieldDropdown.getSelectedDisplayName());
     }
 
     // Verify update of field when an item is selected from the dropdown.
     // TODO(#69): Make tests (using Espresso?) to confirm that user interaction has the same
     //            effect as calling FieldDropdown.setSelection().
+    @Test
     public void testUpdateFieldFromView() {
         final BasicFieldDropdownView view = makeFieldDropdownView();
 
         view.setSelection(2);
-        assertEquals(view.getSelectedItemPosition(), mFieldDropdown.getSelectedIndex());
-        assertEquals(view.getSelectedItem().toString(), mFieldDropdown.getSelectedDisplayName());
+        assertThat(mFieldDropdown.getSelectedIndex()).isEqualTo(view.getSelectedItemPosition());
+        assertThat(mFieldDropdown.getSelectedDisplayName())
+                .isEqualTo(view.getSelectedItem().toString());
 
         view.setSelection(0);
-        assertEquals(view.getSelectedItemPosition(), mFieldDropdown.getSelectedIndex());
-        assertEquals(view.getSelectedItem().toString(), mFieldDropdown.getSelectedDisplayName());
+        assertThat(mFieldDropdown.getSelectedIndex()).isEqualTo(view.getSelectedItemPosition());
+        assertThat(mFieldDropdown.getSelectedDisplayName())
+                .isEqualTo(view.getSelectedItem().toString());
 
         view.setSelection(1);
-        assertEquals(view.getSelectedItemPosition(), mFieldDropdown.getSelectedIndex());
-        assertEquals(view.getSelectedItem().toString(), mFieldDropdown.getSelectedDisplayName());
+        assertThat(mFieldDropdown.getSelectedIndex()).isEqualTo(view.getSelectedItemPosition());
+        assertThat(mFieldDropdown.getSelectedDisplayName())
+                .isEqualTo(view.getSelectedItem().toString());
     }
 
     // Test update of view if field selection changes.
+    @Test
     public void testUpdateViewFromField() {
         final BasicFieldDropdownView view = makeFieldDropdownView();
 
         mFieldDropdown.setSelectedIndex(2);
-        assertEquals(mFieldDropdown.getSelectedIndex(), view.getSelectedItemPosition());
-        assertEquals(mFieldDropdown.getSelectedDisplayName(), view.getSelectedItem().toString());
+        assertThat(view.getSelectedItemPosition()).isEqualTo(mFieldDropdown.getSelectedIndex());
+        assertThat(view.getSelectedItem().toString())
+                .isEqualTo(mFieldDropdown.getSelectedDisplayName());
 
         mFieldDropdown.setSelectedIndex(0);
-        assertEquals(mFieldDropdown.getSelectedIndex(), view.getSelectedItemPosition());
-        assertEquals(mFieldDropdown.getSelectedDisplayName(), view.getSelectedItem().toString());
+        assertThat(view.getSelectedItemPosition()).isEqualTo(mFieldDropdown.getSelectedIndex());
+        assertThat(view.getSelectedItem().toString())
+                .isEqualTo(mFieldDropdown.getSelectedDisplayName());
 
         mFieldDropdown.setSelectedIndex(1);
-        assertEquals(mFieldDropdown.getSelectedIndex(), view.getSelectedItemPosition());
-        assertEquals(mFieldDropdown.getSelectedDisplayName(), view.getSelectedItem().toString());
+        assertThat(view.getSelectedItemPosition()).isEqualTo(mFieldDropdown.getSelectedIndex());
+        assertThat(view.getSelectedItem().toString())
+                .isEqualTo(mFieldDropdown.getSelectedDisplayName());
     }
 
     @NonNull

@@ -17,20 +17,22 @@ package com.google.blockly.android.control;
 
 import android.app.Activity;
 import android.content.Context;
-import android.content.res.AssetManager;
+import android.content.res.Resources;
 import android.os.Bundle;
+import android.os.Looper;
 import android.support.annotation.NonNull;
 import android.support.annotation.Nullable;
-import android.support.v4.widget.DrawerLayout;
-import android.text.TextUtils;
+import android.support.annotation.VisibleForTesting;
 import android.util.Log;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewParent;
 
-import com.google.blockly.android.ToolboxFragment;
-import com.google.blockly.android.TrashFragment;
+import com.google.blockly.android.ui.BlockListUI;
+import com.google.blockly.android.ui.CategorySelectorUI;
 import com.google.blockly.android.WorkspaceFragment;
+import com.google.blockly.android.clipboard.BlockClipDataHelper;
+import com.google.blockly.android.clipboard.SingleMimeTypeClipDataHelper;
 import com.google.blockly.android.ui.Dragger;
 import com.google.blockly.android.ui.BlockGroup;
 import com.google.blockly.android.ui.BlockTouchHandler;
@@ -38,18 +40,28 @@ import com.google.blockly.android.ui.BlockView;
 import com.google.blockly.android.ui.BlockViewFactory;
 import com.google.blockly.android.ui.InputView;
 import com.google.blockly.android.ui.PendingDrag;
+import com.google.blockly.android.ui.ViewPoint;
 import com.google.blockly.android.ui.VirtualWorkspaceView;
 import com.google.blockly.android.ui.WorkspaceHelper;
 import com.google.blockly.android.ui.WorkspaceView;
 import com.google.blockly.android.ui.fieldview.VariableRequestCallback;
 import com.google.blockly.model.Block;
+import com.google.blockly.model.BlockExtension;
 import com.google.blockly.model.BlockFactory;
-import com.google.blockly.model.BlocklyParserException;
+import com.google.blockly.model.BlocklyCategory;
+import com.google.blockly.model.BlocklyEvent;
 import com.google.blockly.model.BlocklySerializerException;
+import com.google.blockly.model.CustomCategory;
 import com.google.blockly.model.Connection;
 import com.google.blockly.model.FieldVariable;
 import com.google.blockly.model.Input;
+import com.google.blockly.model.Mutator;
+import com.google.blockly.model.ProcedureInfo;
+import com.google.blockly.model.VariableInfo;
 import com.google.blockly.model.Workspace;
+import com.google.blockly.model.mutator.AbstractProcedureMutator;
+import com.google.blockly.utils.BlockLoadingException;
+import com.google.blockly.utils.LangUtils;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -60,21 +72,18 @@ import java.util.Collections;
 import java.util.List;
 
 /**
- * Controller to coordinate the state among all the major Blockly components: Workspace, Toolbar,
+ * Controller to coordinate the state among all the major Blockly components: Workspace, Toolbox,
  * Trash, models, and views.
- *
- * Note: Only public methods should call {@link #firePendingEvents()} and only Impl methods should
- * call {@link #addPendingEvent(BlocklyEvent)}. This is to make it easier to maintain events.
+ * <p/>
+ * All calls are expected to be called in the main thread/looper, because they create events that
+ * are processed immediately. Several methods will throw an IllegalStateExceptions if called on a
+ * different thread.
  */
 public class BlocklyController {
     private static final String TAG = "BlocklyController";
 
     private static final String SNAPSHOT_BUNDLE_KEY = "com.google.blockly.snapshot";
     private static final String SERIALIZED_WORKSPACE_KEY = "SERIALIZED_WORKSPACE";
-
-    // Debugging flag to enable the check whether mPendingEvents is empty at the beginning of public
-    // method calls..
-    private static final boolean DEBUG_CHECK_EVENT_GROUP = true;
 
     /**
      * Callback interface for {@link BlocklyEvent}s.
@@ -96,37 +105,42 @@ public class BlocklyController {
     }
 
     private final Context mContext;
+    private final Looper mMainLooper;
     private final BlockFactory mModelFactory;
     private final BlockViewFactory mViewFactory;
     private final WorkspaceHelper mHelper;
+    private final BlockClipDataHelper mClipHelper;
 
     private final Workspace mWorkspace;
     private final ConnectionManager mConnectionManager;
     private final ArrayList<EventsCallback> mListeners = new ArrayList<>();
-    private final ArrayList<BlocklyEvent> mPendingEvents = new ArrayList<>();
+
+    // Whether the current call stack is actively executing code intended to group and fire events.
+    // See groupAndFireEvents(Runnable)
+    private boolean mInEventGroup = false;
+
+    private ArrayList<BlocklyEvent> mPendingEvents;
     private int mPendingEventsMask = 0;
     private int mEventCallbackMask = 0;
 
     private VirtualWorkspaceView mVirtualWorkspaceView;
     private WorkspaceView mWorkspaceView;
     private WorkspaceFragment mWorkspaceFragment = null;
-    private TrashFragment mTrashFragment = null;
-    private View mTrashIcon = null;
-    private ToolboxFragment mToolboxFragment = null;
     private Dragger mDragger;
     private VariableCallback mVariableCallback = null;
 
+    private List<Block> mTempBlocks = new ArrayList<>();
+
+    @VisibleForTesting
+    FlyoutController mFlyoutController;
+
     // For use in bumping neighbors; instance variable only to avoid repeated allocation.
     private final ArrayList<Connection> mTempConnections = new ArrayList<>();
-    private final ArrayList<Block> mTempBlocks = new ArrayList<>();
 
     private View.OnClickListener mDismissClickListener = new View.OnClickListener() {
         @Override
         public void onClick(View v) {
-            if (mTrashFragment.isOpened() && mTrashFragment.isCloseable()) {
-                mTrashFragment.setOpened(false);
-            }
-            mToolboxFragment.closeBlocksDrawer();
+            mFlyoutController.closeFlyouts();
         }
     };
 
@@ -146,7 +160,7 @@ public class BlocklyController {
             return new Runnable() {
                 @Override
                 public void run() {
-                    // extractBlockAsRoot() fires move event immediately.
+                    // extractBlockAsRoot() fires MoveEvent immediately.
                     extractBlockAsRoot(activeTouchedView.getBlock());
 
                     // Since this block was already on the workspace, the block's position should
@@ -154,7 +168,16 @@ public class BlocklyController {
                     BlockGroup bg = mHelper.getRootBlockGroup(activeTouchedView);
                     bg.bringToFront();
 
-                    pendingDrag.setDragGroup(bg);
+                    // Measure and layout the block group to get the correct touch offset.
+                    bg.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED);
+                    bg.layout(0, 0, bg.getMeasuredWidth(), bg.getMeasuredHeight());
+
+                    ViewPoint touchOffset = new ViewPoint(
+                            (int) (activeTouchedView.getX()
+                                    + pendingDrag.getTouchDownViewOffsetX()),
+                            (int) (activeTouchedView.getY()
+                                    + pendingDrag.getTouchDownViewOffsetY()));
+                    pendingDrag.startDrag(mWorkspaceView, bg, touchOffset);
                 }
             };
         }
@@ -178,7 +201,7 @@ public class BlocklyController {
      * @param blockViewFactory Factory used to construct block views for this app.
      */
     private BlocklyController(Context context, BlockFactory blockModelFactory,
-                              WorkspaceHelper workspaceHelper,
+                              WorkspaceHelper workspaceHelper, BlockClipDataHelper clipHelper,
                               @Nullable BlockViewFactory blockViewFactory) {
 
         if (context == null) {
@@ -190,10 +213,18 @@ public class BlocklyController {
         if (workspaceHelper == null) {
             throw new IllegalArgumentException("WorkspaceHelper may not be null.");
         }
+        if (clipHelper == null) {
+            throw new IllegalArgumentException("BlockClipDataHelper may not be null.");
+        }
         mContext = context;
+        mMainLooper = context.getMainLooper();
         mModelFactory = blockModelFactory;
+        mModelFactory.setController(this);
         mHelper = workspaceHelper;
         mViewFactory = blockViewFactory;
+
+        // mHelper, mModelFactory, and mViewFactory must be initialized before mClipHelper.
+        mClipHelper = clipHelper;
 
         mWorkspace = new Workspace(mContext, this, mModelFactory);
         mConnectionManager = mWorkspace.getConnectionManager();
@@ -215,16 +246,20 @@ public class BlocklyController {
 
         mDragger = new Dragger(this);
         mTouchHandler = mDragger.buildSloppyBlockTouchHandler(mWorkspaceDragHandler);
+
+        mFlyoutController = new FlyoutController(this);
+
+        LangUtils.generateLang(mContext);
     }
 
     /**
      * Connects a WorkspaceFragment to this controller.
      *
-     * @param workspaceFragment
+     * @param workspaceFragment The fragment that contains the main workspace.
      */
     public void setWorkspaceFragment(@Nullable WorkspaceFragment workspaceFragment) {
         if (workspaceFragment != null && mViewFactory == null) {
-            throw new IllegalStateException("Cannot set fragments without a BlockViewFactory.");
+            throw new IllegalStateException("Cannot set UIs without a BlockViewFactory.");
         }
 
         if (workspaceFragment == mWorkspaceFragment) {
@@ -240,71 +275,42 @@ public class BlocklyController {
     }
 
     /**
-     * Connects a {@link ToolboxFragment} to this controller, so the user can drag new blocks into
-     * the attached {@link WorkspaceFragment}.
+     * Connects a {@link BlockListUI} and optional {@link CategorySelectorUI} to
+     * this controller, so the user can drag new blocks into the attached
+     * {@link WorkspaceFragment}.
      *
-     * @param toolboxFragment The toolbox to connect to.
+     * @param toolbox The flyout for displaying toolbox blocks.
+     * @param categoryUi Optional ui for displaying toolbox categories.
      */
-    public void setToolboxFragment(@Nullable ToolboxFragment toolboxFragment) {
-        if (toolboxFragment == mToolboxFragment) {
-            return;
+    public void setToolboxUi(BlockListUI toolbox,
+                             @Nullable CategorySelectorUI categoryUi) {
+        if (toolbox != null && mViewFactory == null) {
+            throw new IllegalStateException("Cannot set UIs without a BlockViewFactory.");
         }
-
-        if (mToolboxFragment != null) {
-            // Reset old fragment.
-            mToolboxFragment.setController(null);
-        }
-
-        mToolboxFragment = toolboxFragment;
-
-        if (mToolboxFragment != null) {
-            mToolboxFragment.setController(this);
-            updateToolbox();
-        }
+        mFlyoutController.setToolboxUiComponents(categoryUi, toolbox);
+        mFlyoutController.setToolboxRoot(mWorkspace.getToolboxContents());
     }
 
     /**
-     * @return The currently attached {@link ToolboxFragment}.
-     */
-    public ToolboxFragment getToolboxFragment() {
-        return mToolboxFragment;
-    }
-
-    /**
-     * Connects a {@link TrashFragment} to this controller.
+     * Connects a {@link BlockListUI} for the trash to this controller.
      *
-     * @param trashFragment
+     * @param trashUi
      */
-    public void setTrashFragment(@Nullable TrashFragment trashFragment) {
-        if (trashFragment != null && mViewFactory == null) {
-            throw new IllegalStateException("Cannot set fragments without a BlockViewFactory.");
+    public void setTrashUi(@Nullable BlockListUI trashUi) {
+        if (trashUi != null && mViewFactory == null) {
+            throw new IllegalStateException("Cannot set UIs without a BlockViewFactory.");
         }
-
-        if (trashFragment == mTrashFragment) {
-            return;  // No-op
-        }
-        if (mTrashFragment != null) {
-            // Reset old fragment.
-            mTrashFragment.setController(null);
-        }
-        mTrashFragment = trashFragment;
-        if (mTrashFragment != null) {
-            mTrashFragment.setController(this);
-            mTrashFragment.setContents(mWorkspace.getTrashContents());
-        }
+        mFlyoutController.setTrashUi(trashUi);
+        mFlyoutController.setTrashContents(mWorkspace.getTrashCategory());
     }
 
     /**
-     * Assigns the view used for dropping blocks into the trash.
+     * Assigns the view used for opening/closing the trash.
      *
      * @param trashIcon The trash icon for dropping blocks.
      */
     public void setTrashIcon(View trashIcon) {
-        if (trashIcon == mTrashIcon) {
-            return; // no-op
-        }
-        mTrashIcon = trashIcon;
-        mDragger.setTrashView(mTrashIcon);
+        mFlyoutController.setTrashIcon(trashIcon);
     }
 
     /**
@@ -317,11 +323,9 @@ public class BlocklyController {
         mVariableCallback = variableCallback;
     }
 
-    /**
-     * @return The currently attached {@link TrashFragment}.
-     */
-    public TrashFragment getTrashFragment() {
-        return mTrashFragment;
+    public void registerCategoryFactory(String customCategoryName, CustomCategory factory) {
+        // TODO: Alternative to the static map?
+        BlocklyCategory.CUSTOM_CATEGORIES.put(customCategoryName, factory);
     }
 
     /**
@@ -332,33 +336,36 @@ public class BlocklyController {
     }
 
     /**
-     * Loads the toolbox contents from a JSON resource file.
+     * Loads the toolbox contents from an XML resource file.
      *
      * @param toolboxJsonResId The resource id of JSON file (should be a raw resource file).
      */
-    public void loadToolboxContents(int toolboxJsonResId) {
+    public void loadToolboxContents(int toolboxJsonResId) throws BlockLoadingException {
         mWorkspace.loadToolboxContents(toolboxJsonResId);
         updateToolbox();
     }
 
     /**
-     * Loads the toolbox contents from a JSON string.
+     * Loads the toolbox contents from a XML string.
      *
      * @param toolboxJsonString The JSON source of the set of blocks or block groups to show in the
-     *     toolbox.
+     *                          toolbox.
+     * @throws BlockLoadingException If toolbox was not loaded. May wrap an IOException or another
+     *                               BlockLoadingException.
      */
-    public void loadToolboxContents(String toolboxJsonString) {
+    public void loadToolboxContents(String toolboxJsonString) throws BlockLoadingException {
         mWorkspace.loadToolboxContents(toolboxJsonString);
         updateToolbox();
     }
 
     /**
-     * Loads the toolbox contents from a JSON input stream.
+     * Loads the toolbox contents from a XML input stream.
      *
      * @param toolboxJsonStream A stream of the JSON source of the set of blocks or block groups to
-     *    show in the toolbox.
+     *                          show in the toolbox.
      */
-    public void loadToolboxContents(InputStream toolboxJsonStream) {
+    public void loadToolboxContents(InputStream toolboxJsonStream)
+            throws IOException, BlockLoadingException {
         mWorkspace.loadToolboxContents(toolboxJsonStream);
         updateToolbox();
     }
@@ -368,9 +375,10 @@ public class BlocklyController {
      * the contents of the xml.
      *
      * @param workspaceXmlString The XML source string to read from.
-     * @throws BlocklyParserException if there was a parse failure.
+     * @throws BlockLoadingException If workspace was not loaded. May wrap an IOException or another
+     *                               BlockLoadingException.
      */
-    public void loadWorkspaceContents(String workspaceXmlString) throws BlocklyParserException {
+    public void loadWorkspaceContents(String workspaceXmlString) throws BlockLoadingException {
         mWorkspace.loadWorkspaceContents(workspaceXmlString);
         initBlockViews();
     }
@@ -380,10 +388,9 @@ public class BlocklyController {
      * the contents of the xml.
      *
      * @param workspaceXmlStream The input stream to read from.
-     * @throws BlocklyParserException if there was a parse failure.
+     * @return True if successful. Otherwise, false with error logged.
      */
-    public void loadWorkspaceContents(InputStream workspaceXmlStream)
-            throws BlocklyParserException {
+    public void loadWorkspaceContents(InputStream workspaceXmlStream) throws BlockLoadingException {
         mWorkspace.loadWorkspaceContents(workspaceXmlStream);
         initBlockViews();
     }
@@ -391,10 +398,12 @@ public class BlocklyController {
     /**
      * Saves a snapshot of current workspace contents to a temporary cache file, and saves the
      * filename to the instance state bundle.
-     * @param mSavedInstanceState
-     * @return
+     * @param mSavedInstanceState The output Bundle to write the state to.
+     * @return True if all values were written successfully to the bundle. Otherwise, false with
+     *         errors written to log.
      */
     public boolean onSaveSnapshot(Bundle mSavedInstanceState) {
+        boolean success;
         Bundle blocklyState = new Bundle();
 
         // First attempt to save the workspace to a file.
@@ -402,9 +411,10 @@ public class BlocklyController {
         try {
             mWorkspace.serializeToXml(out);
             blocklyState.putByteArray(SERIALIZED_WORKSPACE_KEY, out.toByteArray());
+            success = true;
         } catch (BlocklySerializerException e) {
-            Log.w(TAG, "Error serializing workspace.", e);
-            return false;
+            Log.e(TAG, "Error serializing workspace.", e);
+            success = false;
         } finally {
             try {
                 out.close();
@@ -415,9 +425,8 @@ public class BlocklyController {
 
         // TODO(#58): Save the rest of the state.
 
-        // Success!
         mSavedInstanceState.putBundle(SNAPSHOT_BUNDLE_KEY, blocklyState);
-        return true;
+        return success;
     }
 
     /**
@@ -425,39 +434,41 @@ public class BlocklyController {
      * {@link #onSaveSnapshot(Bundle)}.
      *
      * @param savedInstanceState The activity state Bundle passed into {@link Activity#onCreate} or
-     *     {@link Activity#onRestoreInstanceState}.
+     *                           {@link Activity#onRestoreInstanceState}.
      * @return True if a Blockly state was found and successfully loaded into the Controller.
-     *     Otherwise, false.
+     *         Otherwise, false.
      */
     public boolean onRestoreSnapshot(@Nullable Bundle savedInstanceState) {
+
         Bundle blocklyState = (savedInstanceState == null) ? null :
                 savedInstanceState.getBundle(SNAPSHOT_BUNDLE_KEY);
-        if (blocklyState != null) {
-            byte[] bytes = blocklyState.getByteArray(SERIALIZED_WORKSPACE_KEY);
-            if (bytes == null) {
-                // Ignore all other workspace variables.
-                return false;
-            }
-            ByteArrayInputStream in = new ByteArrayInputStream(bytes);
-            try {
-                loadWorkspaceContents(in);
-            } catch(BlocklyParserException e) {
-                // Ignore all other workspace state variables.
-                Log.w(TAG, "Unable to restore Blockly state.", e);
-                return false;
-            } finally {
-                try {
-                    in.close();
-                } catch (IOException e) {
-                    // Ignore.
-                }
-            }
-
-            // TODO(#58): Restore the rest of the state.
-
-            return true;
+        if (blocklyState == null) {
+            return  false;
         }
-        return false;
+        byte[] bytes = blocklyState.getByteArray(SERIALIZED_WORKSPACE_KEY);
+        if (bytes == null) {
+            // Ignore all other workspace variables.
+            return false;
+        }
+
+        boolean success = true;
+        ByteArrayInputStream in = new ByteArrayInputStream(bytes);
+        try {
+            loadWorkspaceContents(in);
+        } catch (BlockLoadingException e) {
+            Log.e(TAG, "Failed to load snapshot from Bundle.", e);
+            success = false;
+        } finally {
+            try {
+                in.close();
+            } catch (IOException e) {
+                // Ignore.
+            }
+        }
+
+        // TODO(#58): Restore the rest of the state.
+
+        return success;
     }
 
     public Context getContext() {
@@ -472,23 +483,113 @@ public class BlocklyController {
         return mModelFactory;
     }
 
+    public BlockViewFactory getBlockViewFactory() {
+        return mViewFactory;
+    }
+
     public WorkspaceHelper getWorkspaceHelper() {
         return mHelper;
     }
 
-    public void addCallback(EventsCallback listener) {
-        if (!mListeners.contains(listener)) {
-            mListeners.add(listener);
-            mEventCallbackMask |= listener.getTypesBitmask();
+    public BlockClipDataHelper getClipDataHelper() {
+        return mClipHelper;
+    }
+
+    /**
+     * Closes any open flyouts if they are closeable.
+     *
+     * @return True if any flyouts were closed.
+     */
+    public boolean closeFlyouts() {
+        return mFlyoutController.closeFlyouts();
+    }
+
+    /**
+     * Registers a callback for Blockly events.
+     *
+     * @param callback The callback to add.
+     */
+    public void addCallback(EventsCallback callback) {
+        if (!mListeners.contains(callback)) {
+            mListeners.add(callback);
+            mEventCallbackMask |= callback.getTypesBitmask();
         }
     }
 
-    public boolean removeListener(EventsCallback listener) {
-        boolean found = mListeners.remove(listener);
+    /**
+     * Removes an events callback.
+     *
+     * @param callback The callback to remove.
+     * @return True if the callback was found and removed.
+     */
+    public boolean removeCallback(EventsCallback callback) {
+        boolean found = mListeners.remove(callback);
         if (found) {
             recalculateListenerEventMask();
         }
         return found;
+    }
+
+    /**
+     * @return A count of registered {@link EventsCallback}s.
+     */
+    @VisibleForTesting
+    public int getCallbackCount() {
+        return mListeners.size();
+    }
+
+    /**
+     * Runs a segment of code (immediately) such that all events caused by the changes are collected
+     * into a single event group, and the group of events generated in that code is notified to
+     * {@link EventsCallback}s at the completion of the code. If a {@code groupAndFireEvents()} call
+     * is already in progress, the new code will integrate into that event group. This will catch
+     * side-effect changes, such as block bumps or validation updates.
+     * <p/>
+     * {@code groupAndFireEvents()} must be called from the main thread/looper.
+     */
+    public void groupAndFireEvents(final Runnable runnable) {
+        if (mMainLooper != Looper.myLooper()) {
+            throw new IllegalStateException(
+                    "groupAndFireEvents() must be called from main thread.");
+        }
+        if (mInEventGroup) {
+            // We are already within an event group.  Execute immediately.
+            runnable.run();
+        } else {
+            // Start a new event group, firing events when done.
+            try {
+                mInEventGroup = true;
+                runnable.run();
+            } finally {
+                firePendingEvents();
+                mInEventGroup = false;
+            }
+        }
+    }
+
+    /**
+     * Adds {@code event} to the list of pending events. If this is called outside of a call to
+     * {@link #groupAndFireEvents}, the event will be fired immediately, as its own group.
+     * <p/>
+     * {@code addPendingEvent()} must be called from the main thread/looper.
+     *
+     * @param event The event to append.
+     */
+    public void addPendingEvent(BlocklyEvent event) {
+        if (mMainLooper != Looper.myLooper()) {
+            throw new IllegalStateException("addPendingEvent() must be called from main thread.");
+        }
+
+        if (mPendingEvents == null) {
+            mPendingEvents = new ArrayList<>();
+        }
+        mPendingEvents.add(event);
+        mPendingEventsMask |= event.getTypeId();
+
+        if (!mInEventGroup) {
+            // Outside a prior event group.  Fire immediately.
+            firePendingEvents();
+        }
     }
 
     /**
@@ -497,19 +598,21 @@ public class BlocklyController {
      *
      * @param block The {@link Block} to add to the workspace.
      */
-    public BlockGroup addRootBlock(Block block) {
-        checkPendingEventsEmpty();
-
+    public BlockGroup addRootBlock(final Block block) {
         if (block.getParentBlock() != null) {
             throw new IllegalArgumentException("New root block must not be connected.");
         }
 
-        BlockGroup parentGroup = mHelper.getParentBlockGroup(block);
-        BlockGroup newRootGroup =
-                addRootBlockImpl(block, parentGroup, /* is new BlockView? */ parentGroup == null);
-
-        firePendingEvents();
-        return newRootGroup;
+        final BlockGroup newRootGroup[] = {null};
+        groupAndFireEvents(new Runnable() {
+            @Override
+            public void run() {
+                BlockGroup parentGroup = mHelper.getParentBlockGroup(block);
+                newRootGroup[0] = addRootBlockImpl(
+                        block, parentGroup, /* is new BlockView? */ parentGroup == null);
+            }
+        });
+        return newRootGroup[0];
     }
 
     /**
@@ -518,10 +621,13 @@ public class BlocklyController {
      *
      * @param block {@link Block} to extract as a root block in the workspace.
      */
-    public void extractBlockAsRoot(Block block) {
-        checkPendingEventsEmpty();
-        extractBlockAsRootImpl(block, false);
-        firePendingEvents();
+    public void extractBlockAsRoot(final Block block) {
+        groupAndFireEvents(new Runnable() {
+            @Override
+            public void run() {
+                extractBlockAsRootImpl(block, false);
+            }
+        });
     }
 
     /**
@@ -566,23 +672,14 @@ public class BlocklyController {
     }
 
     /**
-     * Returns true if the specified variable is being used in a workspace.
-     *
-     * @param variable The variable the check.
-     * @return True if the variable exists in a workspace, false otherwise.
+     * Returns the {@link VariableInfo} metadata about a specific variable.
+     * @param variableName The variable queried.
+     * @return The VariableInfo for {@code variableName}, or null if the name does not map to an
+     *         existing variable.
      */
-    public boolean isVariableInUse(String variable) {
-        return mWorkspace.getVariableRefCount(variable) > 0;
-    }
-
-    /**
-     * Returns the list of blocks that are using the specified variable.
-     *
-     * @param variable The variable to get a list of blocks for.
-     * @return The list of blocks using that variable.
-     */
-    public List<Block> getBlocksWithVariable(String variable) {
-        return mWorkspace.getBlocksWithVariable(variable, null);
+    @Nullable
+    public VariableInfo getVariableInfo(String variableName) {
+        return mWorkspace.getVariableInfo(variableName);
     }
 
     /**
@@ -592,11 +689,15 @@ public class BlocklyController {
      * @param variable The desired name of the variable to create.
      * @return The actual variable name that was created.
      */
-    public String addVariable(String variable) {
-        checkPendingEventsEmpty();
-        String result = addVariableImpl(variable, true);
-        firePendingEvents();
-        return result;
+    public String addVariable(final String variable) {
+        final String[] resultVarName = { null };
+        groupAndFireEvents(new Runnable() {
+            @Override
+            public void run() {
+                resultVarName[0] = addVariableImpl(variable, true);
+            }
+        });
+        return resultVarName[0];
     }
 
     /**
@@ -608,11 +709,15 @@ public class BlocklyController {
      * @param variable The desired name of the variable to create.
      * @return The variable name that was created or null if creation was not allowed.
      */
-    public String requestAddVariable(String variable) {
-        checkPendingEventsEmpty();
-        String result = addVariableImpl(variable, false);
-        firePendingEvents();
-        return result;
+    public String requestAddVariable(final String variable) {
+        final String resultVarName[] = {null};
+        groupAndFireEvents(new Runnable() {
+            @Override
+            public void run() {
+                resultVarName[0] = addVariableImpl(variable, false);
+            }
+        });
+        return resultVarName[0];
     }
 
     /**
@@ -622,26 +727,34 @@ public class BlocklyController {
      *
      * @return True if the variable existed and was deleted, false otherwise.
      */
-    public boolean deleteVariable(String variable) {
-        checkPendingEventsEmpty();
-        boolean result = deleteVariableImpl(variable, true);
-        firePendingEvents();
-        return result;
+    public boolean deleteVariable(final String variable) {
+        final boolean resultSuccess[] = {false};
+        groupAndFireEvents(new Runnable() {
+            @Override
+            public void run() {
+                resultSuccess[0] = deleteVariableImpl(variable, true);
+            }
+        });
+        return resultSuccess[0];
     }
 
     /**
      * Attempt to delete a variable from the workspace. If a {@link VariableCallback} is set
-     * {@link VariableCallback#onDeleteVariable(String)} will be called to check if deletion is
+     * {@link VariableCallback#onDeleteVariable} will be called to check if deletion is
      * allowed.
      *
      * @param variable The variable to delete.
      * @return True if the variable existed and was deleted, false otherwise.
      */
-    public boolean requestDeleteVariable(String variable) {
-        checkPendingEventsEmpty();
-        boolean result = deleteVariableImpl(variable, false);
-        firePendingEvents();
-        return result;
+    public boolean requestDeleteVariable(final String variable) {
+        final boolean[] resultSuccess = {false};
+        groupAndFireEvents(new Runnable() {
+            @Override
+            public void run() {
+                resultSuccess[0] = deleteVariableImpl(variable, false);
+            }
+        });
+        return resultSuccess[0];
     }
 
     /**
@@ -654,11 +767,15 @@ public class BlocklyController {
      *
      * @return The new variable name that was saved.
      */
-    public String renameVariable(String variable, String newVariable) {
-        checkPendingEventsEmpty();
-        String result = renameVariableImpl(variable, newVariable, true);
-        firePendingEvents();
-        return result;
+    public String renameVariable(final String variable, final String newVariable) {
+        final String resultVarName[] = {null};
+        groupAndFireEvents(new Runnable() {
+            @Override
+            public void run() {
+                resultVarName[0] = renameVariableImpl(variable, newVariable, true);
+            }
+        });
+        return resultVarName[0];
     }
 
     /**
@@ -672,11 +789,15 @@ public class BlocklyController {
      *
      * @return The new variable name that was saved.
      */
-    public String requestRenameVariable(String variable, String newVariable) {
-        checkPendingEventsEmpty();
-        String result = renameVariableImpl(variable, newVariable, false);
-        firePendingEvents();
-        return result;
+    public String requestRenameVariable(final String variable, final String newVariable) {
+        final String resultVarName[] = {null};
+        groupAndFireEvents(new Runnable() {
+            @Override
+            public void run() {
+                resultVarName[0] = renameVariableImpl(variable, newVariable, false);
+            }
+        });
+        return resultVarName[0];
     }
 
 
@@ -692,10 +813,13 @@ public class BlocklyController {
      * @param otherConnection The target {@link Connection} to connect to. This may already be
      *                        connected.
      */
-    public void connect(Connection blockConnection, Connection otherConnection) {
-        checkPendingEventsEmpty();
-        connectImpl(blockConnection, otherConnection);
-        firePendingEvents();
+    public void connect(final Connection blockConnection, final Connection otherConnection) {
+        groupAndFireEvents(new Runnable() {
+            @Override
+            public void run() {
+                connectImpl(blockConnection, otherConnection);
+            }
+        });
     }
 
     /**
@@ -704,10 +828,13 @@ public class BlocklyController {
      * @param staticConnection The original connection of the block.
      * @param impingingConnection The connection of the block to offset.
      */
-    public void bumpBlock(Connection staticConnection, Connection impingingConnection) {
-        checkPendingEventsEmpty();
-        bumpBlockImpl(staticConnection, impingingConnection);
-        firePendingEvents();
+    public void bumpBlock(final Connection staticConnection, final Connection impingingConnection) {
+        groupAndFireEvents(new Runnable() {
+            @Override
+            public void run() {
+                bumpBlockImpl(staticConnection, impingingConnection);
+            }
+        });
     }
 
     /**
@@ -716,17 +843,20 @@ public class BlocklyController {
      *
      * @param currentBlock The {@link Block} to bump others away from.
      */
-    public void bumpNeighbors(Block currentBlock) {
-        checkPendingEventsEmpty();
+    public void bumpNeighbors(final Block currentBlock) {
+        groupAndFireEvents(new Runnable() {
+            @Override
+            public void run() {
+                BlockGroup rootBlockGroup = mHelper.getRootBlockGroup(currentBlock);
+                if (rootBlockGroup == null) {
+                    return; // Do nothing, as connection locations are determined by views.
+                }
 
-        BlockGroup rootBlockGroup = mHelper.getRootBlockGroup(currentBlock);
-        if (rootBlockGroup == null) {
-            return; // Do nothing, as connection locations are determined by views.
-        }
+                bumpNeighborsRecursively(currentBlock, rootBlockGroup);
 
-        bumpNeighborsRecursively(currentBlock, rootBlockGroup);
-
-        rootBlockGroup.requestLayout();
+                rootBlockGroup.requestLayout();
+            }
+        });
     }
 
     /**
@@ -736,10 +866,13 @@ public class BlocklyController {
      *
      * @param block The {@link Block} to look up and remove.
      */
-    public void removeBlockTree(Block block) {
-        checkPendingEventsEmpty();
-        removeBlockTreeImpl(block);
-        firePendingEvents();
+    public void removeBlockTree(final Block block) {
+        groupAndFireEvents(new Runnable() {
+            @Override
+            public void run() {
+                removeBlockTreeImpl(block);
+            }
+        });
     }
 
     /**
@@ -752,11 +885,16 @@ public class BlocklyController {
      * @param block The block to remove, possibly with descendants attached.
      * @return True if the block was removed, false otherwise.
      */
-    public boolean trashRootBlock(Block block) {
-        checkPendingEventsEmpty();
-        boolean rootFoundAndRemoved = trashRootBlockImpl(block, true);
-        firePendingEvents(); // May not have any events to fire if block was not found.
-        return rootFoundAndRemoved;
+    // TODO(#493): Sound Effect.
+    public boolean trashRootBlock(final Block block) {
+        final boolean rootFoundAndRemoved[] = {false};
+        groupAndFireEvents(new Runnable() {
+            @Override
+            public void run() {
+                rootFoundAndRemoved[0] = trashRootBlockImpl(block, true);
+            }
+        });
+        return rootFoundAndRemoved[0];
     }
 
     /**
@@ -767,11 +905,15 @@ public class BlocklyController {
      * @param block The block to remove, possibly with descendants attached.
      * @return True if the block was removed, false otherwise.
      */
-    public boolean trashRootBlockIgnoringDeletable(Block block) {
-        checkPendingEventsEmpty();
-        boolean rootFoundAndRemoved = trashRootBlockImpl(block, false);
-        firePendingEvents(); // May not have any events to fire if block was not found.
-        return rootFoundAndRemoved;
+    public boolean trashRootBlockIgnoringDeletable(final Block block) {
+        final boolean rootFoundAndRemoved[] = {false};
+        groupAndFireEvents(new Runnable() {
+            @Override
+            public void run() {
+                rootFoundAndRemoved[0] = trashRootBlockImpl(block, false);
+            }
+        });
+        return rootFoundAndRemoved[0];
     }
 
     /**
@@ -797,12 +939,8 @@ public class BlocklyController {
             mWorkspace.addBlockToTrash(block);
             unlinkViews(block);
 
-            if (mTrashFragment != null) {
-                mTrashFragment.onBlockTrashed(block);
-            }
-
             if (hasCallback(BlocklyEvent.TYPE_DELETE)) {
-                addPendingEvent(new BlocklyEvent.DeleteEvent(mWorkspace, block));
+                addPendingEvent(new BlocklyEvent.DeleteEvent(mWorkspace.getId(), block));
             }
         }
 
@@ -811,7 +949,7 @@ public class BlocklyController {
     /**
      * Moves a block (and the child blocks connected to it) from the trashed blocks (removing it
      * from the deleted blocks list), back to the workspace as a root block, including the
-     * BlockGroup and other views in the TrashFragment.
+     * BlockGroup and other views in the trash {@link BlockListUI}.
      *
      * This method does not connect the block to existing blocks, even if the block was connected
      * before putting it in the trash.
@@ -821,11 +959,15 @@ public class BlocklyController {
      *
      * @throws IllegalArgumentException If {@code trashedBlock} is not found in the trashed blocks.
      */
-    public BlockGroup addBlockFromTrash(@NonNull Block previouslyTrashedBlock) {
-        checkPendingEventsEmpty();
-        BlockGroup trashedGroupRoot = addBlockFromTrashImpl(previouslyTrashedBlock);
-        firePendingEvents();  // May not have any events to fire if block was not found in the trash
-        return trashedGroupRoot;
+    public BlockGroup addBlockFromTrash(final @NonNull Block previouslyTrashedBlock) {
+        final BlockGroup trashedGroupRoot[] = {null};
+        groupAndFireEvents(new Runnable() {
+            @Override
+            public void run() {
+                trashedGroupRoot[0] = addBlockFromTrashImpl(previouslyTrashedBlock);
+            }
+        });
+        return trashedGroupRoot[0];
     }
 
     /**
@@ -855,11 +997,8 @@ public class BlocklyController {
             }
             mWorkspaceView.addView(bg);
         }
-        if (mTrashFragment != null) {
-            mTrashFragment.onBlockRemovedFromTrash(previouslyTrashedBlock);
-        }
         if (hasCallback(BlocklyEvent.TYPE_CREATE)) {
-            addPendingEvent(new BlocklyEvent.CreateEvent(mWorkspace, previouslyTrashedBlock));
+            addPendingEvent(new BlocklyEvent.CreateEvent(previouslyTrashedBlock));
         }
         return bg;
     }
@@ -934,7 +1073,8 @@ public class BlocklyController {
         for (int i = 0; i < rootBlocks.size(); ++i) {
             unlinkViews(rootBlocks.get(i));
         }
-        List<Block> trashBlocks = mWorkspace.getTrashContents();
+        List<Block> trashBlocks = new ArrayList<>();
+        mWorkspace.getTrashCategory().getAllBlocksRecursive(trashBlocks);
         for (int i = 0; i < trashBlocks.size(); i++) {
             unlinkViews(trashBlocks.get(i));
         }
@@ -943,9 +1083,24 @@ public class BlocklyController {
             mWorkspaceView.removeAllViews();
             initBlockViews();
         }
-        if (mTrashFragment != null) {
-            mTrashFragment.setContents(mWorkspace.getTrashContents());
+        if (mFlyoutController != null) {
+            mFlyoutController.setTrashContents(mWorkspace.getTrashCategory());
         }
+    }
+
+    /**
+     * Removes all blocks from the {@link WorkspaceView} and puts them in the trash.
+     */
+    public void trashAllBlocks() {
+        groupAndFireEvents(new Runnable() {
+            @Override
+            public void run() {
+                List<Block> rootBlocks = new ArrayList<>(mWorkspace.getRootBlocks());
+                for (Block block: rootBlocks) {
+                    trashRootBlockImpl(block, true);
+                }
+            }
+        });
     }
 
     /**
@@ -969,6 +1124,9 @@ public class BlocklyController {
      */
     private BlockGroup addRootBlockImpl(Block block, @Nullable BlockGroup bg, boolean isNewBlock) {
         mWorkspace.addRootBlock(block, isNewBlock);
+        if (isNewBlock) {
+            addPendingEvent(new BlocklyEvent.CreateEvent(block));
+        }
         if (mWorkspaceView != null) {
             if (bg == null) {
                 bg = mViewFactory.buildBlockGroupTree(block, mWorkspace.getConnectionManager(),
@@ -977,9 +1135,6 @@ public class BlocklyController {
                 bg.setTouchHandler(mTouchHandler);
             }
             mWorkspaceView.addView(bg);
-        }
-        if (isNewBlock && hasCallback(BlocklyEvent.TYPE_CREATE)) {
-            addPendingEvent(new BlocklyEvent.CreateEvent(mWorkspace, block));
         }
         return bg;
     }
@@ -998,8 +1153,9 @@ public class BlocklyController {
                 return null;
             }
         }
+        String finalName = mWorkspace.addVariable(variable, true);
         // TODO: (#309) add new variable event
-        return mWorkspace.getVariableNameManager().generateUniqueName(variable, true);
+        return finalName;
     }
 
     /**
@@ -1007,20 +1163,36 @@ public class BlocklyController {
      *
      * @param variable The variable to remove.
      * @param forced True to force removal even if there's a callback to delegate the action to.
+     *               This will not force the deletion of a procedure argument.
      * @return True if the variable was removed, false otherwise.
      */
     private boolean deleteVariableImpl(String variable, boolean forced) {
-        if (!forced && mVariableCallback != null) {
-            if (!mVariableCallback.onDeleteVariable(variable)) {
+        VariableInfo varInfo = getVariableInfo(variable);
+        if (varInfo != null) {
+            if (varInfo.isProcedureArgument()) {
+                if (mVariableCallback != null) {
+                    mVariableCallback.onAlertCannotDeleteProcedureArgument(variable, varInfo);
+                }
                 return false;
             }
-        }
-        if (isVariableInUse(variable)) {
-            mTempBlocks.clear();
-            List<Block> blocks = mWorkspace.getBlocksWithVariable(variable, mTempBlocks);
-            for (int i = 0; i < blocks.size(); i++) {
-                removeBlockAndInputBlocksImpl(blocks.get(i));
+
+            if (!forced && mVariableCallback != null) {
+                if (!mVariableCallback.onDeleteVariable(variable, varInfo)) {
+                    return false;
+                }
             }
+
+            List<FieldVariable> fields = varInfo.getFields();
+            mTempBlocks.clear(); // Visited / removed blocks (in case of block with multiple).
+            int fieldCount = fields.size();
+            for (int i = 0; i < fieldCount; ++i) {
+                Block block = fields.get(i).getBlock();
+                if (!mTempBlocks.contains(block)) {
+                    removeBlockAndInputBlocksImpl(block);
+                    mTempBlocks.add(block);
+                }
+            }
+            mTempBlocks.clear();
         }
         // TODO: (#309) add remove variable event
         return mWorkspace.getVariableNameManager().remove(variable);
@@ -1031,6 +1203,7 @@ public class BlocklyController {
      * pending events:
      * <ol>
      *    <li>a change event for each variable field referencing the variable.</li>
+     *    <li>a change mutation event for each procedure block.</li>
      * </ol>
      *
      * @param variable The variable to rename.
@@ -1044,21 +1217,51 @@ public class BlocklyController {
                 return variable;
             }
         }
-        if (TextUtils.isEmpty(newVariable) || variable == newVariable) {
+
+        NameManager varNameManager = mWorkspace.getVariableNameManager();
+        if (variable == newVariable || !varNameManager.isValidName(newVariable)) {
             return variable;
         }
-        newVariable = addVariableImpl(newVariable, true);
-        List<FieldVariable> varRefs = mWorkspace.getVariableRefs(variable);
-        if (varRefs != null) {
-            int count = varRefs.size();
+        String canonicalNewVar = varNameManager.makeCanonical(newVariable);
 
-            for (int i = 0; i < count; i++) {
-                FieldVariable field = varRefs.get(i);
-                field.setVariable(newVariable);
-                BlocklyEvent.ChangeEvent change = BlocklyEvent.ChangeEvent
-                        .newFieldValueEvent(getWorkspace(), field.getBlock(), field,
-                                variable, newVariable);
-                addPendingEvent(change);
+        newVariable = addVariableImpl(newVariable, true);
+
+        VariableInfo oldVarInfo = mWorkspace.getVariableInfo(variable);
+        if (oldVarInfo != null) {
+            ProcedureManager procedureManager = mWorkspace.getProcedureManager();
+            int procCount = oldVarInfo.getCountOfProceduresUsages();
+            ArrayList<String> newArgs = new ArrayList<>();
+            for (int i = 0; i < procCount; ++i) {
+                String procName = oldVarInfo.getProcedureName(i);
+                Block definition = procedureManager.getDefinitionBlocks().get(procName);
+                ProcedureInfo oldProcInfo =
+                        ((AbstractProcedureMutator) definition.getMutator()).getProcedureInfo();
+                List<String> oldArgs = oldProcInfo.getArgumentNames();
+                int argCount = oldArgs.size();
+
+                newArgs.clear();
+                for (int j = 0; j < argCount; ++j) {
+                    String argName = oldArgs.get(j);
+                    if (varNameManager.makeCanonical(argName).equals(canonicalNewVar)) {
+                        argName = newVariable;
+                    }
+                    newArgs.add(argName);
+                }
+
+                // Mutate the procdure. This will mutate both the definition and the caller
+                procedureManager.mutateProcedure(definition,
+                        new ProcedureInfo(
+                                procName, newArgs, oldProcInfo.getDefinitionHasStatementBody()));
+            }
+
+            List<FieldVariable> varRefs = oldVarInfo.getFields();
+            if (varRefs != null) {
+                for (FieldVariable field : varRefs) {
+                    field.setVariable(newVariable);
+                    BlocklyEvent.ChangeEvent change = BlocklyEvent.ChangeEvent
+                            .newFieldValueEvent(field.getBlock(), field, variable, newVariable);
+                    addPendingEvent(change);
+                }
             }
         }
 
@@ -1079,7 +1282,7 @@ public class BlocklyController {
         extractBlockAsRootImpl(block, false);
         if (removeRootBlockImpl(block, true)) {
             unlinkViews(block);
-            addPendingEvent(new BlocklyEvent.DeleteEvent(getWorkspace(), block));
+            addPendingEvent(new BlocklyEvent.DeleteEvent(getWorkspace().getId(), block));
         }
     }
 
@@ -1107,7 +1310,7 @@ public class BlocklyController {
         boolean result = removeRootBlockImpl(block, true);
         unlinkViews(block);
         if (result) {
-            addPendingEvent(new BlocklyEvent.DeleteEvent(getWorkspace(), block));
+            addPendingEvent(new BlocklyEvent.DeleteEvent(getWorkspace().getId(), block));
         }
         return true;
     }
@@ -1155,7 +1358,7 @@ public class BlocklyController {
     private void connectToStatementImpl(Connection parentStatementConnection, Block toConnect) {
         // Store the state of toConnect in its original location.
         // TODO: (#342) move the event up to the impl method
-        BlocklyEvent.MoveEvent moveEvent = new BlocklyEvent.MoveEvent(mWorkspace, toConnect);
+        BlocklyEvent.MoveEvent moveEvent = new BlocklyEvent.MoveEvent(toConnect);
 
         Block remainderBlock = parentStatementConnection.getTargetBlock();
         BlocklyEvent.MoveEvent remainderMove = null;
@@ -1167,7 +1370,7 @@ public class BlocklyController {
                 remainderBlock = null;
             } else {
                 // Store the original location of the remainder.
-                remainderMove = new BlocklyEvent.MoveEvent(mWorkspace, remainderBlock);
+                remainderMove = new BlocklyEvent.MoveEvent(remainderBlock);
 
                 // Disconnect the remainder and we'll reattach it below
                 parentStatementConnection.disconnect();
@@ -1192,7 +1395,8 @@ public class BlocklyController {
             // If lastBlock doesn't have a next bump instead.
             if (lastBlock.getNextConnection() == null) {
                 // Nothing to connect to.  Bump and add to root.
-                addRootBlockImpl(remainderBlock, mHelper.getParentBlockGroup(remainderBlock), false);
+                addRootBlockImpl(
+                        remainderBlock, mHelper.getParentBlockGroup(remainderBlock), false);
 
                 bumpBlockImpl(parentStatementConnection, remainderBlock.getPreviousConnection());
             } else {
@@ -1330,7 +1534,7 @@ public class BlocklyController {
             // single place it could be reconnected to. The previousTarget will replace a shadow if
             // one was present.
             Connection lastInputConnection = child.getLastUnconnectedInputConnection();
-            if (lastInputConnection == null) {
+            if (lastInputConnection == null || !Connection.checksMatch(lastInputConnection,previousTargetConnection)) {
                 // Bump and add back to root.
                 BlockGroup previousTargetGroup =
                         mHelper.getParentBlockGroup(previousTargetBlock);
@@ -1374,7 +1578,7 @@ public class BlocklyController {
         }
         // TODO: Document when this call valid but the root is not already part of the workspace.
         boolean isPartOfWorkspace = mWorkspace.isRootBlock(rootBlock);
-        BlocklyEvent.MoveEvent moveEvent = new BlocklyEvent.MoveEvent(getWorkspace(), block);
+        BlocklyEvent.MoveEvent moveEvent = new BlocklyEvent.MoveEvent(block);
         BlocklyEvent.MoveEvent remainderEvent = null;
 
         BlockView bv = mHelper.getView(block);
@@ -1385,7 +1589,7 @@ public class BlocklyController {
         BlockGroup remainderGroup = null;
         if (reattachNext && block.getNextBlock() != null) {
             remainderBlock = block.getNextBlock();
-            remainderEvent = new BlocklyEvent.MoveEvent(getWorkspace(), remainderBlock);
+            remainderEvent = new BlocklyEvent.MoveEvent(remainderBlock);
 
             remainderGroup = (bg == null) ? null :
                     bg.extractBlocksAsNewGroup(remainderBlock);
@@ -1453,11 +1657,11 @@ public class BlocklyController {
     }
 
     /**
-     * Populates the toolbox fragments with the current toolbox contents.
+     * Populates the toolbox UIs with the current toolbox contents.
      */
     private void updateToolbox() {
-        if (mToolboxFragment != null) {
-            mToolboxFragment.setContents(mWorkspace.getToolboxContents());
+        if (mFlyoutController != null) {
+            mFlyoutController.setToolboxRoot(mWorkspace.getToolboxContents());
         }
     }
 
@@ -1526,9 +1730,9 @@ public class BlocklyController {
         BlockGroup impingingBlockGroup = mHelper.getRootBlockGroup(rootBlock);
 
         int maxSnapDistance = mHelper.getMaxSnapDistance();
-        int dx = (staticConnection.getPosition().x + maxSnapDistance)
+        float dx = (staticConnection.getPosition().x + maxSnapDistance)
                 - impingingConnection.getPosition().x;
-        int dy = (staticConnection.getPosition().y + maxSnapDistance)
+        float dy = (staticConnection.getPosition().y + maxSnapDistance)
                 - impingingConnection.getPosition().y;
         rootBlock.setPosition(rootBlock.getPosition().x + dx, rootBlock.getPosition().y + dy);
 
@@ -1619,11 +1823,6 @@ public class BlocklyController {
         return (mEventCallbackMask & typeQueryBitMask) != 0;
     }
 
-    private void addPendingEvent(BlocklyEvent event) {
-        mPendingEvents.add(event);
-        mPendingEventsMask |= event.getTypeId();
-    }
-
     private void recalculateListenerEventMask() {
         mEventCallbackMask = 0;
         for (EventsCallback listener : mListeners) {
@@ -1642,14 +1841,8 @@ public class BlocklyController {
             }
         }
 
-        mPendingEvents.clear();
+        mPendingEvents = null;
         mPendingEventsMask = 0;
-    }
-
-    private void checkPendingEventsEmpty() {
-        if (DEBUG_CHECK_EVENT_GROUP && !mPendingEvents.isEmpty()) {
-            throw new IllegalStateException("Expecting empty mPendingEvents.");
-        }
     }
 
     /**
@@ -1658,23 +1851,21 @@ public class BlocklyController {
     public static class Builder {
         private Context mContext;
         private WorkspaceHelper mWorkspaceHelper;
+        private BlockClipDataHelper mClipHelper;
         private BlockViewFactory mViewFactory;
         private VariableCallback mVariableCallback;
         private WorkspaceFragment mWorkspaceFragment;
-        private ToolboxFragment mToolboxFragment;
-        private DrawerLayout mToolboxDrawer;
-        private TrashFragment mTrashFragment;
+        private BlockListUI mToolbox;
+        private CategorySelectorUI mCategoryUi;
+        private BlockListUI mTrashUi;
         private View mTrashIcon;
-        private AssetManager mAssetManager;
 
         // TODO: Should these be part of the style?
         private int mToolboxResId;
-        private String mToolboxAssetId;
+        private String mToolboxAssetPath;
         private String mToolboxXml;
         private ArrayList<Integer> mBlockDefResources = new ArrayList<>();
         private ArrayList<String> mBlockDefAssets = new ArrayList<>();
-        private ArrayList<Block> mBlockDefs = new ArrayList<>();
-
 
         public Builder(Context context) {
             mContext = context;
@@ -1682,6 +1873,11 @@ public class BlocklyController {
 
         public Builder setWorkspaceHelper(WorkspaceHelper workspaceHelper) {
             mWorkspaceHelper = workspaceHelper;
+            return this;
+        }
+
+        public Builder setClipDataHelper(BlockClipDataHelper clipHelper) {
+            mClipHelper = clipHelper;
             return this;
         }
 
@@ -1700,25 +1896,52 @@ public class BlocklyController {
             return this;
         }
 
-        public Builder setToolboxFragment(ToolboxFragment toolbox, DrawerLayout toolboxDrawer) {
-            mToolboxFragment = toolbox;
-            mToolboxDrawer = toolboxDrawer;
+        /**
+         * Sets the ui used for the toolbox, including the flyout with blocks and the
+         * category tabs.
+         * <p/>
+         * <strong>Warning:</strong> It is possible this toolbox will be loaded during
+         * {@link Builder#build()}, before the application has a chance to register any
+         * {@link Mutator}s or {@link BlockExtension}s. Make sure, if using this convenience
+         * {@code Builder} method, the referenced blocks do not depend upon such features.
+         * Otherwise, set the toolbox later by calling {@link BlocklyController#setToolboxUi} on the
+         * controller, post construction.
+         *
+         * @param toolbox The {@link BlockListUI} to use to display blocks in the current
+         *                category.
+         * @param categoryUi The BlockListUI for displaying the list of
+         *                         categories.
+         * @return this
+         */
+        public Builder setToolboxUi(BlockListUI toolbox,
+                                    CategorySelectorUI categoryUi) {
+            mToolbox = toolbox;
+            mCategoryUi = categoryUi;
             return this;
         }
 
-        public Builder setTrashFragment(TrashFragment trash) {
-            mTrashFragment = trash;
+        /**
+         * Sets the BlockListUI to be used for the trash. This must be a different ui than
+         * the toolbox flyout ui.
+         *
+         * @param trash The {@link BlockListUI} to use to display blocks in the trash.
+         * @return this
+         */
+        public Builder setTrashUi(BlockListUI trash) {
+            mTrashUi = trash;
             return this;
         }
 
+        /**
+         * Sets a View to use as a drop target and click target for opening/closing
+         * the trash. Since the icon may not be inflated yet this can be added after creating the
+         * controller with {@link BlocklyController#setTrashIcon(View)}.
+         *
+         * @param trashIcon The view to use for opening/closing the trash.
+         * @return this
+         */
         public Builder setTrashIcon(View trashIcon) {
             mTrashIcon = trashIcon;
-            return this;
-        }
-
-        // TODO(#128): Remove. Use mContext.getAssets()
-        public Builder setAssetManager(AssetManager manager) {
-            mAssetManager = manager;
             return this;
         }
 
@@ -1775,38 +1998,18 @@ public class BlocklyController {
             }
             return this;
         }
-        /**
-         * Adds a list of blocks to the set of all known blocks. These will be added to the set of
-         * all known blocks, but will not appear in the user's toolbox unless they are also defined
-         * in the toolbox configuration via {@link #setToolboxConfigurationResId(int)}.
-         * <p/>
-         * These blocks may not have any child blocks attached to them. If these blocks are
-         * duplicates of blocks loaded from a resource they will override the block from resources.
-         * Blocks added here will always be loaded after any blocks added with {@link
-         * #addBlockDefinitions(int)};
-         * <p/>
-         * A duplicate block is any block with the same {@link Block#getType() type}.
-         *
-         * @param blocks The list of blocks to add to the workspace.
-         * @return this
-         */
-        public Builder addBlockDefinitions(List<Block> blocks) {
-            mBlockDefs.addAll(blocks);
-            return this;
-        }
 
         /**
          * Sets the resource to load the toolbox configuration from. This must be an xml resource in
          * the raw directory.
          * <p/>
-         * If this is set, {@link #setToolboxConfiguration(String)} and {@link
-         * #setToolboxConfigurationAsset(String)} may not be set.
+         * If this is set, {@link #setToolboxConfigurationAsset(String)} may not be set.
          *
          * @param toolboxResId The resource id for the toolbox config file.
          * @return this
          */
         public Builder setToolboxConfigurationResId(int toolboxResId) {
-            if (mToolboxXml != null && mToolboxAssetId != null) {
+            if (mToolboxXml != null && mToolboxAssetPath != null) {
                 throw new IllegalStateException("Toolbox res id may not be set if xml is set.");
             }
             mToolboxResId = toolboxResId;
@@ -1817,8 +2020,7 @@ public class BlocklyController {
          * Sets the asset to load the toolbox configuration from. The asset name must be a path to a
          * file in the assets directory.
          * <p/>
-         * If this is set, {@link #setToolboxConfiguration(String)} and {@link
-         * #setToolboxConfigurationResId(int)} may not be set.
+         * If this is set {@link #setToolboxConfigurationResId(int)} may not be set.
          *
          * @param assetName The asset for the toolbox config file.
          * @return this
@@ -1827,24 +2029,7 @@ public class BlocklyController {
             if (mToolboxXml != null && mToolboxResId != 0) {
                 throw new IllegalStateException("Toolbox res id may not be set if xml is set.");
             }
-            mToolboxAssetId = assetName;
-            return this;
-        }
-
-        /**
-         * Sets the XML to use for toolbox configuration.
-         * <p/>
-         * If this is set, {@link #setToolboxConfigurationResId(int)} and {@link
-         * #setToolboxConfigurationAsset(String)} may not be set.
-         *
-         * @param toolboxXml The XML for configuring the toolbox.
-         * @return this
-         */
-        public Builder setToolboxConfiguration(String toolboxXml) {
-            if (mToolboxResId != 0 && mToolboxAssetId != null) {
-                throw new IllegalStateException("Toolbox xml may not be set if a res id is set");
-            }
-            mToolboxXml = toolboxXml;
+            mToolboxAssetPath = assetName;
             return this;
         }
 
@@ -1854,62 +2039,114 @@ public class BlocklyController {
          * @return A new {@link BlocklyController}.
          */
         public BlocklyController build() {
-            if (mViewFactory == null && (mWorkspaceFragment != null || mTrashFragment != null
-                    || mToolboxFragment != null || mToolboxDrawer != null)) {
+            if (mViewFactory == null && (mWorkspaceFragment != null || mTrashUi != null
+                    || mToolbox != null || mCategoryUi != null)) {
                 throw new IllegalStateException(
-                        "BlockViewFactory cannot be null when using Fragments.");
+                        "BlockViewFactory cannot be null when using UIs.");
             }
 
             if (mWorkspaceHelper == null) {
                 mWorkspaceHelper = new WorkspaceHelper(mContext);
             }
-            BlockFactory factory = new BlockFactory(mContext, null);
-            for (int i = 0; i < mBlockDefResources.size(); i++) {
-                try {
-                    factory.addBlocks(mBlockDefResources.get(i));
-                } catch (Throwable e) {
-                    factory.clear();  // Clear partially loaded resources.
-                    throw e;
-                }
+
+            BlockClipDataHelper blockClipDataHelper = mClipHelper;
+            if (blockClipDataHelper == null) {
+                blockClipDataHelper = SingleMimeTypeClipDataHelper.getDefault(mContext);
             }
-            for (int i = 0; i < mBlockDefAssets.size(); i++) {
-                String assetPath = mBlockDefAssets.get(i);
+
+            BlockFactory factory = new BlockFactory();
+            loadBlockDefinitionsFromResources(factory, mBlockDefResources);
+            loadBlockDefinitionsFromAssets(factory, mBlockDefAssets);
+            BlocklyController controller = new BlocklyController(
+                    mContext, factory, mWorkspaceHelper, blockClipDataHelper, mViewFactory);
+            loadToolbox(controller);
+
+            // Any of the following may be null and result in a no-op.
+            controller.setWorkspaceFragment(mWorkspaceFragment);
+            controller.setTrashUi(mTrashUi);
+            controller.setToolboxUi(mToolbox, mCategoryUi);
+            controller.setTrashIcon(mTrashIcon);
+            controller.setVariableCallback(mVariableCallback);
+
+            return controller;
+        }
+
+        /**
+         * Loads list of block definitions from asset files or fail with IllegalStateException.
+         *
+         * @param factory The factory to add block definitions to.
+         * @param assetPaths The paths to JSON block definition files.
+         */
+        private void loadBlockDefinitionsFromAssets(BlockFactory factory, List<String> assetPaths) {
+            for (int i = 0; i < assetPaths.size(); i++) {
+                String assetPath = assetPaths.get(i);
                 try {
-                    factory.addBlocks(mAssetManager.open(assetPath));
-                } catch (IOException e) {
+                    factory.addJsonDefinitions(mContext.getAssets().open(assetPath));
+                } catch (IOException | BlockLoadingException e) {
                     factory.clear();  // Clear partially loaded resources.
                     // Compile-time bundled assets are assumed to always be valid.
                     throw new IllegalStateException("Failed to load block definitions from asset: "
                             + assetPath, e);
                 }
             }
-            for (int i = 0; i < mBlockDefs.size(); i++) {
-                factory.addBlockTemplate(mBlockDefs.get(i));
-            }
-            BlocklyController controller = new BlocklyController(
-                    mContext, factory, mWorkspaceHelper, mViewFactory);
-            if (mToolboxResId != 0) {
-                controller.loadToolboxContents(mToolboxResId);
-            } else if (mToolboxXml != null) {
-                controller.loadToolboxContents(mToolboxXml);
-            } else if (mToolboxAssetId != null && mAssetManager != null) {
+        }
+
+        /**
+         * Loads list of block definitions from resources or fail with IllegalStateException.
+         *
+         * @param factory The factory to add block definitions to.
+         * @param resIds The resource ids to raw XML files with the block definitions.
+         */
+        private void loadBlockDefinitionsFromResources(BlockFactory factory, List<Integer> resIds) {
+            Resources resources = mContext.getResources();
+            for (int i = 0; i < resIds.size(); i++) {
+                int resourceId = resIds.get(i);
                 try {
-                    controller.loadToolboxContents(mAssetManager.open(mToolboxAssetId));
-                } catch (IOException e) {
-                    throw new IllegalArgumentException("Failed to load toolbox from assets "
-                            + mToolboxAssetId, e);
+                    InputStream is = resources.openRawResource(resourceId);
+                    factory.addJsonDefinitions(is);
+                } catch (IOException | BlockLoadingException e) {
+                    factory.clear();  // Clear partially loaded resources.
+                    // Compile-time bundled assets are assumed to always be valid.
+                    String resName = resources.getResourceName(resourceId);
+                    throw new IllegalStateException(
+                            "Failed to load block definition from resource id " + resourceId
+                            + (resName == null ? "" : " \"" + resName + "\""), e);
                 }
             }
-
-            // Any of the following may be null and result in a no-op.
-            controller.setWorkspaceFragment(mWorkspaceFragment);
-            controller.setTrashFragment(mTrashFragment);
-            controller.setToolboxFragment(mToolboxFragment);
-            controller.setTrashIcon(mTrashIcon);
-            controller.setVariableCallback(mVariableCallback);
-
-            return controller;
         }
+
+        /**
+         * Loads the toolbox from {@link #mToolboxResId}, {@link #mToolboxXml}, or
+         * {@link #mToolboxAssetPath}. If loading fails, throw an IllegalStateException since this
+         * is a early initialization (and probably compile time) resource.
+         *
+         * @param controller The controller to load into.
+         */
+        private void loadToolbox(BlocklyController controller) {
+            String fromClausePeriod = ".";
+            try {
+                if (mToolboxResId != 0) {
+                    fromClausePeriod = " from resources.";
+                    controller.loadToolboxContents(mToolboxResId);
+                } else if (mToolboxXml != null) {
+                    fromClausePeriod = " from raw XML.";
+                    controller.loadToolboxContents(mToolboxXml);
+                } else if (mToolboxAssetPath != null && mContext.getAssets() != null) {
+                    fromClausePeriod = " from asset \"" + mToolboxAssetPath + "\".";
+
+                    try {
+                        controller.loadToolboxContents(
+                                mContext.getAssets().open(mToolboxAssetPath));
+                    } catch (IOException e) {
+                        Log.e(TAG, "Failed to initialize toolbox blocks from assets.", e);
+                    }
+                }
+            } catch (BlockLoadingException e) {
+                // Compile-time bundled assets are assumed to always be valid.
+                throw new IllegalStateException("Failed to load toolbox" + fromClausePeriod, e);
+            }
+        }
+
     }
 
     /**
@@ -1926,7 +2163,7 @@ public class BlocklyController {
          * @param variable The variable being deleted.
          * @return True to allow the delete, false to prevent it.
          */
-        public boolean onDeleteVariable(String variable) {
+        public boolean onDeleteVariable(String variable, VariableInfo info) {
             return true;
         }
 
@@ -1956,5 +2193,13 @@ public class BlocklyController {
         public boolean onRenameVariable(String variable, String newVariable) {
             return true;
         }
+
+        /**
+         * Sent when a user attempts to delete a variable that is used as a procedure argument.
+         * @param variableName The name of the variable.
+         * @param info The info for this variable.
+         */
+        public abstract void onAlertCannotDeleteProcedureArgument(
+                String variableName, VariableInfo info);
     }
 }

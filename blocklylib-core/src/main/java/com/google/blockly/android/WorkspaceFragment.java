@@ -20,7 +20,6 @@ import android.content.res.TypedArray;
 import android.os.Bundle;
 import android.support.v4.app.Fragment;
 import android.util.AttributeSet;
-import android.util.Log;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
@@ -28,6 +27,7 @@ import android.view.ViewGroup;
 import com.google.blockly.android.control.BlocklyController;
 import com.google.blockly.android.ui.BlockView;
 import com.google.blockly.android.ui.VirtualWorkspaceView;
+import com.google.blockly.android.ui.WorkspaceGridRenderer;
 import com.google.blockly.android.ui.WorkspaceView;
 import com.google.blockly.model.Workspace;
 
@@ -45,46 +45,42 @@ import com.google.blockly.model.Workspace;
  *     android:id="@+id/blockly_workspace"
  *     android:layout_width="match_parent"
  *     android:layout_height="match_parent"
- *     <b>blockly:scrollable</b>="true"
  *     /&gt;
  * </pre></blockquote>
  */
 public class WorkspaceFragment extends Fragment {
     private static final String TAG = "WorkspaceFragment";
 
-    public static final boolean DEFAULT_SCROLLABLE = true;
-
-    public static final String ARG_SCROLLABLE = "WorkspaceFragment_scrollable";
-
     private BlocklyController mController;
     private Workspace mWorkspace;
     private VirtualWorkspaceView mVirtualWorkspaceView;
     private WorkspaceView mWorkspaceView;
 
-    private boolean mScrollable = true;
+    private boolean mDrawGrid = true;
+    private int mGridColor;
+    private int mGridSpacing;
+    private int mGridDotRadius;
+    private int mBackgroundColor;
 
     @Override
     public void onInflate(Context context, AttributeSet attrs, Bundle savedInstanceState) {
         super.onInflate(context, attrs, savedInstanceState);
-
-        TypedArray a = context.getTheme().obtainStyledAttributes(
-                attrs,
-                R.styleable.WorkspaceFragment,
-                0, 0);
+        TypedArray a = context.getTheme().obtainStyledAttributes(attrs,
+                R.styleable.WorkspaceFragment, 0, 0);
         try {
-            //noinspection ResourceType
-            mScrollable =
-                    a.getBoolean(R.styleable.WorkspaceFragment_scrollable, DEFAULT_SCROLLABLE);
+            mDrawGrid = a.getBoolean(R.styleable.WorkspaceFragment_drawGrid,
+                    mDrawGrid);
+            mGridColor = a.getInt(R.styleable.WorkspaceFragment_gridColor,
+                    WorkspaceGridRenderer.DEFAULT_GRID_COLOR);
+            mGridSpacing = a.getInt(R.styleable.WorkspaceFragment_gridSpacing,
+                    WorkspaceGridRenderer.DEFAULT_GRID_SPACING);
+            mGridDotRadius = a.getInt(R.styleable.WorkspaceFragment_gridDotRadius,
+                    WorkspaceGridRenderer.DEFAULT_GRID_RADIUS);
+            mBackgroundColor = a.getInt(R.styleable.WorkspaceFragment_backgroundColor,
+                    WorkspaceGridRenderer.DEFAULT_BACKGROUND_COLOR);
         } finally {
             a.recycle();
         }
-
-        // Store values in arguments, so fragment resume works (no inflation during resume).
-        Bundle args = getArguments();
-        if (args == null) {
-            setArguments(args = new Bundle());
-        }
-        args.putBoolean(ARG_SCROLLABLE, mScrollable);
     }
 
     @Override
@@ -96,15 +92,27 @@ public class WorkspaceFragment extends Fragment {
         mVirtualWorkspaceView =
                 (VirtualWorkspaceView) rootView.findViewById(R.id.virtual_workspace);
         mWorkspaceView = (WorkspaceView) rootView.findViewById(R.id.workspace);
+        configureWorkspaceLayout(mVirtualWorkspaceView);
 
-        mVirtualWorkspaceView.setScrollable(mScrollable);
+        if (mController != null) {
+            mVirtualWorkspaceView.setZoomBehavior(
+                    mController.getWorkspaceHelper().getZoomBehavior());
+        }
+        mVirtualWorkspaceView.setDrawGrid(mDrawGrid);
 
         return rootView;
     }
 
+    private void configureWorkspaceLayout(VirtualWorkspaceView virtualWorkspaceView) {
+        virtualWorkspaceView.setGridColor(mGridColor);
+        virtualWorkspaceView.setGridSpacing(mGridSpacing);
+        virtualWorkspaceView.setGridDotRadius(mGridDotRadius);
+        virtualWorkspaceView.setBackgroundColor(mBackgroundColor);
+    }
+
     /**
      * Sets the controller to use in this fragment for instantiating views. This should be the same
-     * controller used for an associated {@link ToolboxFragment} or {@link TrashFragment}.
+     * controller used for any associated {@link FlyoutFragment FlyoutFragments}.
      *
      * @param controller The controller backing this fragment.
      */
@@ -116,16 +124,10 @@ public class WorkspaceFragment extends Fragment {
         mController = controller;
         mWorkspace = (controller == null) ? null : mController.getWorkspace();
         mController.initWorkspaceView(mWorkspaceView);
-    }
 
-    public boolean getScrollable() {
-        return mScrollable;
-    }
-
-    public void setScrollable(boolean scrollable) {
-        mScrollable = scrollable;
         if (mVirtualWorkspaceView != null) {
-            mVirtualWorkspaceView.setScrollable(mScrollable);
+            mVirtualWorkspaceView.setZoomBehavior(
+                    mController.getWorkspaceHelper().getZoomBehavior());
         }
     }
 

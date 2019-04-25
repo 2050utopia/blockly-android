@@ -36,8 +36,9 @@ import java.util.List;
 public class SplitActivity extends AbstractBlocklyActivity {
     private static final String TAG = "SplitActivity";
 
-    // SplitActivity shares a save file with TurtleActivity to show generated code and running code.
-    public static final String SAVED_WORKSPACE_FILENAME = TurtleActivity.SAVED_WORKSPACE_FILENAME;
+    private static final String SAVE_FILENAME = "split_workspace.xml";
+    private static final String AUTOSAVE_FILENAME = "split_workspace_temp.xml";
+
     private TextView mGeneratedTextView;
     private Handler mHandler;
 
@@ -51,21 +52,11 @@ public class SplitActivity extends AbstractBlocklyActivity {
                         @Override
                         public void run() {
                             mGeneratedTextView.setText(generatedCode);
-                            updateTextMinWidth();
+                            DemoUtil.updateTextMinWidth(mGeneratedTextView, SplitActivity.this);
                         }
                     });
                 }
             };
-
-    @Override
-    public void onLoadWorkspace() {
-        loadWorkspaceFromAppDir(SAVED_WORKSPACE_FILENAME);
-    }
-
-    @Override
-    public void onSaveWorkspace() {
-        saveWorkspaceToAppDir(SAVED_WORKSPACE_FILENAME);
-    }
 
     @Override
     public boolean onOptionsItemSelected(MenuItem item) {
@@ -83,7 +74,7 @@ public class SplitActivity extends AbstractBlocklyActivity {
     protected View onCreateContentView(int parentId) {
         View root = getLayoutInflater().inflate(R.layout.split_content, null);
         mGeneratedTextView = (TextView) root.findViewById(R.id.generated_code);
-        updateTextMinWidth();
+        DemoUtil.updateTextMinWidth(mGeneratedTextView, this);
 
         mNoCodeText = mGeneratedTextView.getText().toString(); // Capture initial value.
 
@@ -92,7 +83,7 @@ public class SplitActivity extends AbstractBlocklyActivity {
 
     @Override
     protected int getActionBarMenuResId() {
-        return R.menu.turtle_actionbar;
+        return R.menu.split_actionbar;
     }
 
     @NonNull
@@ -123,37 +114,31 @@ public class SplitActivity extends AbstractBlocklyActivity {
     }
 
     @Override
-    protected void onInitBlankWorkspace() {
-        TurtleActivity.addDefaultVariables(getController());
-    }
-
-    @Override
     public void onClearWorkspace() {
         super.onClearWorkspace();
         mGeneratedTextView.setText(mNoCodeText);
-        updateTextMinWidth();
+        DemoUtil.updateTextMinWidth(mGeneratedTextView, this);
     }
 
     /**
-     * Estimate the pixel size of the longest line of text, and set that to the TextView's minimum
-     * width.
+     * Optional override of the save path, since this demo Activity has multiple Blockly
+     * configurations.
+     * @return Workspace save path used by this Activity.
      */
-    private void updateTextMinWidth() {
-        String text = mGeneratedTextView.getText().toString();
-        int maxline = 0;
-        int start = 0;
-        int index = text.indexOf('\n', start);
-        while (index > 0) {
-            maxline = Math.max(maxline, index - start);
-            start = index + 1;
-            index = text.indexOf('\n', start);
-        }
-        int remainder = text.length() - start;
-        if (remainder > 0) {
-            maxline = Math.max(maxline, remainder);
-        }
+    @Override
+    @NonNull
+    protected String getWorkspaceSavePath() {
+        return SAVE_FILENAME;
+    }
 
-        float density = getResources().getDisplayMetrics().density;
-        mGeneratedTextView.setMinWidth((int) (maxline * 13 * density));
+    /**
+     * Optional override of the auto-save path, since this demo Activity has multiple Blockly
+     * configurations.
+     * @return Workspace auto-save path used by this Activity.
+     */
+    @Override
+    @NonNull
+    protected String getWorkspaceAutosavePath() {
+        return AUTOSAVE_FILENAME;
     }
 }

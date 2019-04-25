@@ -18,16 +18,14 @@ package com.google.blockly.model;
 import android.text.TextUtils;
 
 import com.google.blockly.utils.BlockLoadingException;
+import com.google.blockly.utils.LangUtils;
 
 import org.json.JSONObject;
-import org.xmlpull.v1.XmlSerializer;
-
-import java.io.IOException;
 
 /**
  * Adds a variable to an Input.
  */
-public final class FieldVariable extends Field<FieldVariable.Observer> {
+public final class FieldVariable extends Field {
     private String mVariable;
 
     public FieldVariable(String name, String variable) {
@@ -40,7 +38,7 @@ public final class FieldVariable extends Field<FieldVariable.Observer> {
         if (TextUtils.isEmpty(name)) {
             throw new BlockLoadingException("field_variable \"name\" attribute must not be empty.");
         }
-        return new FieldVariable(name, json.optString("variable", "item"));
+        return new FieldVariable(name, LangUtils.interpolate(json.optString("variable", "item")));
     }
 
     @Override
@@ -71,34 +69,15 @@ public final class FieldVariable extends Field<FieldVariable.Observer> {
     public void setVariable(String variable) {
         if ((mVariable == null && variable != null)
                 || (mVariable != null && !mVariable.equalsIgnoreCase(variable))) {
-            String oldVar = mVariable;
+            String oldValue = getSerializedValue();
             mVariable = variable;
-            onVariableChanged(this, oldVar, variable);
+            String newValue = getSerializedValue();
+            fireValueChanged(oldValue, newValue);
         }
     }
 
     @Override
     public String getSerializedValue() {
         return mVariable;
-    }
-
-    private void onVariableChanged(com.google.blockly.model.FieldVariable field, String oldVar, String newVar) {
-        for (int i = 0; i < mObservers.size(); i++) {
-            mObservers.get(i).onVariableChanged(field, oldVar, newVar);
-        }
-    }
-
-    /**
-     * Observer for listening to changes to a variable field.
-     */
-    public interface Observer {
-        /**
-         * Called when the field's variable name changed.
-         *
-         * @param field The field that changed.
-         * @param oldVar The field's previous variable name.
-         * @param newVar The field's new variable name.
-         */
-        void onVariableChanged(com.google.blockly.model.FieldVariable field, String oldVar, String newVar);
     }
 }

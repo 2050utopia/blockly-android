@@ -14,22 +14,36 @@
  */
 package com.google.blockly.model;
 
-import android.test.AndroidTestCase;
+import org.junit.Before;
+import org.junit.Test;
+
+import static com.google.common.truth.Truth.assertThat;
 
 /**
  * Tests for {@link FieldLabel}.
  */
-public class FieldLabelTest extends AndroidTestCase {
-    public void testFieldLabel() {
-        FieldLabel field = new FieldLabel("field name", "some text");
-        assertEquals(Field.TYPE_LABEL, field.getType());
-        assertEquals("field name", field.getName());
-        assertEquals("some text", field.getText());
+public class FieldLabelTest {
+    public static final String FIELD_NAME = "mField name";
+    public static final String INITIAL_VALUE = "some text";
+    FieldLabel mField;
 
-        field = new FieldLabel("name", null);
-        assertEquals("name", field.getName());
-        assertEquals("", field.getText());
+    @Before
+    public void setUp() {
+        mField = new FieldLabel(FIELD_NAME, INITIAL_VALUE);
+    }
 
-        assertNotSame(field, field.clone());
+    @Test
+    public void testConstructor() {
+        assertThat(mField.getType()).isEqualTo(Field.TYPE_LABEL);
+        assertThat(mField.getName()).isEqualTo(FIELD_NAME);
+        assertThat(mField.getText()).isEqualTo(INITIAL_VALUE);
+    }
+
+    @Test
+    public void testClone() {
+        FieldLabel clone = mField.clone();
+        assertThat(mField).isNotSameAs(clone);
+        assertThat(clone.getName()).isEqualTo(mField.getName());
+        assertThat(clone.getText()).isEqualTo(mField.getText());
     }
 }

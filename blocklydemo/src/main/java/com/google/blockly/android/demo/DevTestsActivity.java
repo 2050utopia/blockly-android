@@ -24,10 +24,14 @@ import android.widget.ListAdapter;
 import android.widget.Toast;
 
 import com.google.blockly.android.BlocklySectionsActivity;
+import com.google.blockly.android.ZoomBehavior;
 import com.google.blockly.android.codegen.CodeGenerationRequest;
 import com.google.blockly.android.codegen.LoggingCodeGeneratorCallback;
 import com.google.blockly.android.control.BlocklyController;
 import com.google.blockly.model.Block;
+import com.google.blockly.model.DefaultBlocks;
+import com.google.blockly.utils.BlockLoadingException;
+import com.google.blockly.utils.LangUtils;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -42,15 +46,16 @@ import java.util.List;
 public class DevTestsActivity extends BlocklySectionsActivity {
     private static final String TAG = "DevTestsActivity";
 
-    public static final String SAVED_WORKSPACE_FILENAME = "dev_tests_workspace.xml";
+    public static final String SAVE_FILENAME = "dev_tests_workspace.xml";
+
     private static final List<String> BLOCK_DEFINITIONS = Collections.unmodifiableList(
             Arrays.asList(
-                    "default/list_blocks.json",
-                    "default/logic_blocks.json",
-                    "default/loop_blocks.json",
-                    "default/math_blocks.json",
-                    "default/text_blocks.json",
-                    "default/variable_blocks.json",
+                    DefaultBlocks.LIST_BLOCKS_PATH,
+                    DefaultBlocks.LOGIC_BLOCKS_PATH,
+                    DefaultBlocks.LOOP_BLOCKS_PATH,
+                    DefaultBlocks.MATH_BLOCKS_PATH,
+                    DefaultBlocks.TEXT_BLOCKS_PATH,
+                    DefaultBlocks.VARIABLE_BLOCKS_PATH,
                     "default/test_blocks.json",
                     "sample_sections/mock_block_definitions.json"
             ));
@@ -60,6 +65,7 @@ public class DevTestsActivity extends BlocklySectionsActivity {
     public static final String WORKSPACE_FOLDER_PREFIX = "sample_sections/level_";
 
     protected MenuItem mScrollableMenuItem;
+    protected MenuItem mPinchZoomMenuItem;
     protected MenuItem mLogEventsMenuItem;
 
     protected CodeGenerationRequest.CodeGeneratorCallback mCodeGeneratorCallback =
@@ -69,12 +75,23 @@ public class DevTestsActivity extends BlocklySectionsActivity {
     @Override
     public boolean onCreateOptionsMenu(Menu menu) {
         boolean isShown = super.onCreateOptionsMenu(menu);
+        for (int i = 0; i < menu.size(); i++) {
+            menu.getItem(i).setTitle(LangUtils.interpolate(menu.getItem(i).getTitle().toString()));
+        }
         if (isShown) {
+            ZoomBehavior zb = getController().getWorkspaceHelper().getZoomBehavior();
+
             mScrollableMenuItem = menu.findItem(R.id.scrollable_menuitem);
+            mPinchZoomMenuItem = menu.findItem(R.id.pinch_zoom_menuitem);
             mLogEventsMenuItem = menu.findItem(R.id.log_events_menuitem);
 
             if (mScrollableMenuItem != null) {
-                mScrollableMenuItem.setChecked(mWorkspaceFragment.getScrollable());
+                mScrollableMenuItem.setEnabled(false); // TODO: Dynamic Zoom Behavior
+                mScrollableMenuItem.setChecked(zb.isScrollEnabled());
+            }
+            if (mPinchZoomMenuItem != null) {
+                mPinchZoomMenuItem.setEnabled(false); // TODO: Dynamic Zoom Behavior
+                mPinchZoomMenuItem.setChecked(zb.isPinchZoomEnabled());
             }
         }
         return isShown;
@@ -84,9 +101,7 @@ public class DevTestsActivity extends BlocklySectionsActivity {
     public boolean onOptionsItemSelected(MenuItem item) {
         int id = item.getItemId();
 
-        if (id == R.id.scrollable_menuitem) {
-            setWorkspaceScrolling(!mScrollableMenuItem.isChecked());
-        } else if (id == R.id.log_events_menuitem) {
+        if (id == R.id.log_events_menuitem) {
             setLogEvents(!mLogEventsMenuItem.isChecked());
         } else if (id == R.id.action_airstrike) {
             airstrike();
@@ -105,36 +120,14 @@ public class DevTestsActivity extends BlocklySectionsActivity {
         return super.onOptionsItemSelected(item);
     }
 
-    @Override
-    public void onLoadWorkspace() {
-        loadWorkspaceFromAppDir(SAVED_WORKSPACE_FILENAME);
-    }
-
-    @Override
-    public void onSaveWorkspace() {
-        saveWorkspaceToAppDir(SAVED_WORKSPACE_FILENAME);
-    }
-
-    /**
-     * Enables or disables scrolling on the workspace. This is test-only feature, in that we expect
-     * developers to set the scrollability once, and not change it while there may be blocks on the
-     * workspace. This does not guarantee all blocks will be visible, even if scrolling is disabled.
-     *
-     * @param allowScrolling
-     */
-    private void setWorkspaceScrolling(boolean allowScrolling) {
-        mWorkspaceFragment.setScrollable(allowScrolling);
-        mScrollableMenuItem.setChecked(allowScrolling);
-    }
-
     /**
      * @param logEvents Enable event logging if true. Otherwise, disable.
      */
     private void setLogEvents(boolean logEvents) {
         if (logEvents) {
-            mController.addCallback(mEventsCallback);
+            getController().addCallback(mEventsCallback);
         } else {
-            mController.removeListener(mEventsCallback);
+            getController().removeCallback(mEventsCallback);
         }
         mLogEventsMenuItem.setChecked(logEvents);
     }
@@ -144,11 +137,11 @@ public class DevTestsActivity extends BlocklySectionsActivity {
      */
     private void airstrike() {
         List<Block> blocks = new ArrayList<>();
-        mController.getWorkspace().getToolboxContents().getAllBlocksRecursive(blocks);
+        getController().getWorkspace().getToolboxContents().getAllBlocksRecursive(blocks);
         for (int i = 0; i < blocks.size(); i++) {
             Block copiedModel = blocks.get(i).deepCopy();
             copiedModel.setPosition(0, 0);
-            mController.addRootBlock(copiedModel);
+            getController().addRootBlock(copiedModel);
         }
     }
 
@@ -163,21 +156,24 @@ public class DevTestsActivity extends BlocklySectionsActivity {
             Block copiedModel = blocks.get(i).deepCopy();
             copiedModel.setPosition((int) (Math.random() * CARPET_SIZE) - CARPET_SIZE / 2,
                     (int) (Math.random() * CARPET_SIZE) - CARPET_SIZE / 2);
-            mController.addRootBlock(copiedModel);
+            getController().addRootBlock(copiedModel);
         }
     }
 
     /**
      * Loads a workspace with heavily nested blocks.
      */
-    private void loadSpaghetti() {
+    private boolean loadSpaghetti() {
         try {
             getController().loadWorkspaceContents(getAssets().open(
                     "sample_sections/workspace_spaghetti.xml"));
-        } catch (IOException e) {
+            return true;
+        } catch (IOException | BlockLoadingException e) {
             Toast.makeText(getApplicationContext(),
                     R.string.toast_workspace_file_not_found,
                     Toast.LENGTH_LONG).show();
+            Log.e(TAG, "Failed to load spaghetti workspace.", e);
+            return false;
         }
     }
 
@@ -194,11 +190,6 @@ public class DevTestsActivity extends BlocklySectionsActivity {
         return BLOCK_DEFINITIONS;
     }
 
-    @Override
-    protected String getStartingWorkspacePath() {
-        return "default/demo_workspace.xml";
-    }
-
     @NonNull
     @Override
     protected List<String> getGeneratorsJsPaths() {
@@ -212,8 +203,10 @@ public class DevTestsActivity extends BlocklySectionsActivity {
         try {
             getController().loadWorkspaceContents(getAssets().open(
                     "sample_sections/mock_block_initial_workspace.xml"));
-        } catch (IOException e) {
-            Log.d(TAG, "Couldn't load initial workspace.");
+        } catch (IOException | BlockLoadingException e) {
+            Log.e(TAG, "Couldn't load initial workspace.", e);
+            // Compile-time assets are assumed good.
+            throw new IllegalStateException(e);
         }
         addDefaultVariables();
     }
@@ -222,7 +215,6 @@ public class DevTestsActivity extends BlocklySectionsActivity {
     protected int getActionBarMenuResId() {
         return R.menu.dev_actionbar;
     }
-
 
     @NonNull
     @Override
@@ -263,5 +255,25 @@ public class DevTestsActivity extends BlocklySectionsActivity {
         controller.addVariable("zim");
         controller.addVariable("gir");
         controller.addVariable("tak");
+    }
+
+    @Override
+    protected void onAutosave() {
+        // Dev tests doesn't autosave/restore the user's workspace by default as we load a specific
+        // workspace in onLoadInitialWorkspace.
+        return;
+    }
+
+    @Override
+    protected boolean onAutoload() {
+        // Dev tests doesn't autosave/restore the user's workspace by default as we load a specific
+        // workspace in onLoadInitialWorkspace.
+        return false;
+    }
+
+    @Override
+    @NonNull
+    protected String getWorkspaceSavePath() {
+        return SAVE_FILENAME;
     }
 }

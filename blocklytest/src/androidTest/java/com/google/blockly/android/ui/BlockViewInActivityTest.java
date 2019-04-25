@@ -16,28 +16,36 @@
 package com.google.blockly.android.ui;
 
 import android.app.Instrumentation;
-import android.test.ActivityInstrumentationTestCase2;
+import android.support.test.InstrumentationRegistry;
+import android.support.test.rule.ActivityTestRule;
 import android.view.View;
-import android.view.ViewParent;
 
-import com.google.blockly.android.R;
 import com.google.blockly.android.TestUtils;
 import com.google.blockly.android.TestWorkspaceViewActivity;
+import com.google.blockly.android.control.BlocklyController;
 import com.google.blockly.android.control.ConnectionManager;
 import com.google.blockly.model.Block;
 import com.google.blockly.model.BlockFactory;
+import com.google.blockly.model.BlockTemplate;
+import com.google.blockly.utils.BlockLoadingException;
 
-import org.mockito.Mock;
+import org.junit.Before;
+import org.junit.Rule;
+import org.junit.Test;
 import org.mockito.MockitoAnnotations;
 
+import static com.google.blockly.utils.ViewSubject.view;
+import static com.google.common.truth.Truth.assertAbout;
+import static com.google.common.truth.Truth.assertThat;
+import static org.mockito.Mockito.mock;
 
 /**
  * {@link BlockView} tests in the context of an attached Activity.
  */
-public class BlockViewInActivityTest
-        extends ActivityInstrumentationTestCase2<TestWorkspaceViewActivity> {
+public class BlockViewInActivityTest {
     private TestWorkspaceViewActivity mActivity;
     private Instrumentation mInstrumentation;
+    private BlocklyController mController;
     private BlockFactory mBlockFactory;
     private WorkspaceHelper mHelper;
     private BlockViewFactory mViewFactory;
@@ -51,23 +59,27 @@ public class BlockViewInActivityTest
     private BlockView mChildInputBlockView;
     private BlockView mChildStatementBlockView;
 
-    @Mock
     private ConnectionManager mMockConnectionManager;
 
-    public BlockViewInActivityTest() {
-        super(TestWorkspaceViewActivity.class);
-    }
+    @Rule
+    public ActivityTestRule<TestWorkspaceViewActivity> mActivityRule =
+        new ActivityTestRule<>(TestWorkspaceViewActivity.class);
 
-    @Override
+    @Before
     public void setUp() {
-        mActivity = getActivity();
-        mInstrumentation = getInstrumentation();
+        mMockConnectionManager = mock(ConnectionManager.class);
+        mActivity = mActivityRule.getActivity();
+        mInstrumentation = InstrumentationRegistry.getInstrumentation();
 
         // To solve some issue with Dexmaker.  This allows us to use mockito.
         System.setProperty("dexmaker.dexcache", mActivity.getCacheDir().getPath());
         MockitoAnnotations.initMocks(this);
 
-        mBlockFactory = new BlockFactory(mActivity.mThemeWrapper, new int[]{R.raw.test_blocks});
+
+        mController = new BlocklyController.Builder(mActivity.mThemeWrapper)
+                .addBlockDefinitionsFromAsset("default/test_blocks.json")
+                .build();
+        mBlockFactory = mController.getBlockFactory();
         mHelper = mActivity.mWorkspaceHelper;
         mViewFactory = mActivity.mViewFactory;
     }
@@ -76,26 +88,34 @@ public class BlockViewInActivityTest
      * Loads a {@code whileUntil} block instance with children into the workspace.
      */
     private void loadWhileUntilBlocksIntoWorkspaceView() {
-        mRootBlock = mBlockFactory.obtainBlock("controls_whileUntil", "1");
-        assertNotNull(mRootBlock);
-        mChildInputBlock = mBlockFactory.obtainBlock("output_no_input", "2");
-        mRootBlock.getInputByName("TIMES").getConnection()
-                .connect(mChildInputBlock.getOutputConnection());
-        mChildStatementBlock = mBlockFactory.obtainBlock("statement_no_input", "3");
-        mRootBlock.getInputByName("NAME").getConnection()
-                .connect(mChildStatementBlock.getPreviousConnection());
+        try {
+            mRootBlock = mBlockFactory.obtainBlockFrom(
+                    new BlockTemplate().ofType("controls_whileUntil"));
+            assertThat(mRootBlock).isNotNull();
+            mChildInputBlock = mBlockFactory.obtainBlockFrom(
+                    new BlockTemplate().ofType("output_no_input"));
+            mRootBlock.getInputByName("BOOL").getConnection()
+                    .connect(mChildInputBlock.getOutputConnection());
+            mChildStatementBlock = mBlockFactory.obtainBlockFrom(
+                    new BlockTemplate().ofType("statement_no_input"));
+            mRootBlock.getInputByName("DO").getConnection()
+                    .connect(mChildStatementBlock.getPreviousConnection());
 
-        mViewFactory.buildBlockGroupTree(mRootBlock, mMockConnectionManager, null);
-        mRootView = mHelper.getView(mRootBlock);
-        mFieldView = TestUtils.getFieldView(mRootView, mRootBlock.getFieldByName("MODE"));
-        mChildInputBlockView = mHelper.getView(mChildInputBlock);
-        mChildStatementBlockView = mHelper.getView(mChildStatementBlock);
+            mViewFactory.buildBlockGroupTree(mRootBlock, mMockConnectionManager, null);
+            mRootView = mHelper.getView(mRootBlock);
+            mFieldView = TestUtils.getFieldView(mRootView, mRootBlock.getFieldByName("MODE"));
+            mChildInputBlockView = mHelper.getView(mChildInputBlock);
+            mChildStatementBlockView = mHelper.getView(mChildStatementBlock);
 
-        BlockGroup rootBlockGroup = (BlockGroup) mRootView.getParent();
-        mActivity.mWorkspaceView.addView(rootBlockGroup);
+            BlockGroup rootBlockGroup = (BlockGroup) mRootView.getParent();
+            mActivity.mWorkspaceView.addView(rootBlockGroup);
+        } catch (BlockLoadingException e) {
+            throw new RuntimeException(e);
+        }
     }
 
     /** Tests that pressed {@link View} state does not propagate to child BlockViews. */
+    @Test
     public void testActivatedStateDoesNotAffectChildren() {
         mActivity.runOnUiThread(new Runnable() {
             @Override
@@ -106,15 +126,17 @@ public class BlockViewInActivityTest
         mInstrumentation.waitForIdleSync();
 
         // Preconditions
-        assertTrue(isDescendentOf(mFieldView, (View) mViewFactory.getView(mRootBlock)));
-        assertTrue(isDescendentOf((View) mChildInputBlockView, (View) mHelper.getView(mRootBlock)));
-        assertTrue(isDescendentOf((View) mChildStatementBlockView,
-                (View) mHelper.getView(mRootBlock)));
+        assertAbout(view()).that(mFieldView)
+                .isDescendantOf(mViewFactory.getView(mRootBlock));
+        assertAbout(view()).that((View) mChildInputBlockView)
+                .isDescendantOf(mViewFactory.getView(mRootBlock));
+        assertAbout(view()).that((View) mChildStatementBlockView)
+                .isDescendantOf(mViewFactory.getView(mRootBlock));
 
-        assertFalse(((View) mRootView).isActivated());
-        assertFalse(((View) mFieldView).isActivated());
-        assertFalse(((View) mChildInputBlockView).isActivated());
-        assertFalse(((View) mChildStatementBlockView).isActivated());
+        assertThat(((View) mRootView).isActivated()).isFalse();
+        assertThat(((View) mFieldView).isActivated()).isFalse();
+        assertThat(((View) mChildInputBlockView).isActivated()).isFalse();
+        assertThat(((View) mChildStatementBlockView).isActivated()).isFalse();
 
         mActivity.runOnUiThread(new Runnable() {
             @Override
@@ -125,13 +147,14 @@ public class BlockViewInActivityTest
         mInstrumentation.waitForIdleSync();
 
         // Only mRootView should be activated.
-        assertTrue(((View) mRootView).isActivated());
-        assertFalse(((View) mFieldView).isActivated());
-        assertFalse(((View) mChildInputBlockView).isActivated());
-        assertFalse(((View) mChildStatementBlockView).isActivated());
+        assertThat(((View) mRootView).isActivated()).isTrue();
+        assertThat(((View) mFieldView).isActivated()).isFalse();
+        assertThat(((View) mChildInputBlockView).isActivated()).isFalse();
+        assertThat(((View) mChildStatementBlockView).isActivated()).isFalse();
     }
 
     /** Tests that pressed {@link View} state does not propagate to child BlockViews. */
+    @Test
     public void testPressedStateDoesNotAffectChildren() {
         mActivity.runOnUiThread(new Runnable() {
             @Override
@@ -142,15 +165,17 @@ public class BlockViewInActivityTest
         mInstrumentation.waitForIdleSync();
 
         // Preconditions
-        assertTrue(isDescendentOf(mFieldView, (View) mHelper.getView(mRootBlock)));
-        assertTrue(isDescendentOf((View) mChildInputBlockView, (View) mHelper.getView(mRootBlock)));
-        assertTrue(isDescendentOf((View) mChildStatementBlockView,
-                (View) mHelper.getView(mRootBlock)));
+        assertAbout(view()).that(mFieldView)
+                .isDescendantOf(mViewFactory.getView(mRootBlock));
+        assertAbout(view()).that((View) mChildInputBlockView)
+                .isDescendantOf(mViewFactory.getView(mRootBlock));
+        assertAbout(view()).that((View) mChildStatementBlockView)
+                .isDescendantOf(mViewFactory.getView(mRootBlock));
 
-        assertFalse(((View) mRootView).isPressed());
-        assertFalse(((View) mFieldView).isPressed());
-        assertFalse(((View) mChildInputBlockView).isPressed());
-        assertFalse(((View) mChildStatementBlockView).isPressed());
+        assertThat(((View) mRootView).isPressed()).isFalse();
+        assertThat(((View) mFieldView).isPressed()).isFalse();
+        assertThat(((View) mChildInputBlockView).isPressed()).isFalse();
+        assertThat(((View) mChildStatementBlockView).isPressed()).isFalse();
 
         mActivity.runOnUiThread(new Runnable() {
             @Override
@@ -161,13 +186,14 @@ public class BlockViewInActivityTest
         mInstrumentation.waitForIdleSync();
 
         // Only mRootView should be pressed.
-        assertTrue(((View) mRootView).isPressed());
-        assertFalse(((View) mFieldView).isPressed());
-        assertFalse(((View) mChildInputBlockView).isPressed());
-        assertFalse(((View) mChildStatementBlockView).isPressed());
+        assertThat(((View) mRootView).isPressed()).isTrue();
+        assertThat(((View) mFieldView).isPressed()).isFalse();
+        assertThat(((View) mChildInputBlockView).isPressed()).isFalse();
+        assertThat(((View) mChildStatementBlockView).isPressed()).isFalse();
     }
 
     /** Tests that focused {@link View} state does not propagate to child BlockViews. */
+    @Test
     public void testFocusedStateDoesNotAffectChildren() {
         mActivity.runOnUiThread(new Runnable() {
             @Override
@@ -178,15 +204,17 @@ public class BlockViewInActivityTest
         mInstrumentation.waitForIdleSync();
 
         // Preconditions
-        assertTrue(isDescendentOf(mFieldView, (View) mHelper.getView(mRootBlock)));
-        assertTrue(isDescendentOf((View) mChildInputBlockView, (View) mHelper.getView(mRootBlock)));
-        assertTrue(isDescendentOf((View) mChildStatementBlockView,
-                (View) mHelper.getView(mRootBlock)));
+        assertAbout(view()).that(mFieldView)
+                .isDescendantOf(mViewFactory.getView(mRootBlock));
+        assertAbout(view()).that((View) mChildInputBlockView)
+                .isDescendantOf(mViewFactory.getView(mRootBlock));
+        assertAbout(view()).that((View) mChildStatementBlockView)
+                .isDescendantOf(mViewFactory.getView(mRootBlock));
 
-        assertFalse(((View) mRootView).isFocused());
-        assertFalse(mFieldView.isFocused());
-        assertFalse(((View) mChildInputBlockView).isFocused());
-        assertFalse(((View) mChildStatementBlockView).isFocused());
+        assertThat(((View) mRootView).isFocused()).isFalse();
+        assertThat(mFieldView.isFocused()).isFalse();
+        assertThat(((View) mChildInputBlockView).isFocused()).isFalse();
+        assertThat(((View) mChildStatementBlockView).isFocused()).isFalse();
 
         mActivity.runOnUiThread(new Runnable() {
             @Override
@@ -197,13 +225,14 @@ public class BlockViewInActivityTest
         mInstrumentation.waitForIdleSync();
 
         // Only mRootView should be focused.
-        assertTrue(((View) mRootView).isFocused());
-        assertFalse(mFieldView.isFocused());
-        assertFalse(((View) mChildInputBlockView).isFocused());
-        assertFalse(((View) mChildStatementBlockView).isFocused());
+        assertThat(((View) mRootView).isFocused()).isTrue();
+        assertThat(mFieldView.isFocused()).isFalse();
+        assertThat(((View) mChildInputBlockView).isFocused()).isFalse();
+        assertThat(((View) mChildStatementBlockView).isFocused()).isFalse();
     }
 
     /** Tests that selected {@link View} state does not propagate to child BlockViews. */
+    @Test
     public void testSelectedStateDoesNotAffectChildren() {
         mActivity.runOnUiThread(new Runnable() {
             @Override
@@ -214,15 +243,17 @@ public class BlockViewInActivityTest
         mInstrumentation.waitForIdleSync();
 
         // Preconditions
-        assertTrue(isDescendentOf(mFieldView, (View) mHelper.getView(mRootBlock)));
-        assertTrue(isDescendentOf((View) mChildInputBlockView, (View) mHelper.getView(mRootBlock)));
-        assertTrue(isDescendentOf((View) mChildStatementBlockView,
-                (View) mHelper.getView(mRootBlock)));
+        assertAbout(view()).that(mFieldView)
+                .isDescendantOf(mViewFactory.getView(mRootBlock));
+        assertAbout(view()).that((View) mChildInputBlockView)
+                .isDescendantOf(mViewFactory.getView(mRootBlock));
+        assertAbout(view()).that((View) mChildStatementBlockView)
+                .isDescendantOf(mViewFactory.getView(mRootBlock));
 
-        assertFalse(((View) mRootView).isSelected());
-        assertFalse(mFieldView.isSelected());
-        assertFalse(((View) mChildInputBlockView).isSelected());
-        assertFalse(((View) mChildStatementBlockView).isSelected());
+        assertThat(((View) mRootView).isSelected()).isFalse();
+        assertThat(mFieldView.isSelected()).isFalse();
+        assertThat(((View) mChildInputBlockView).isSelected()).isFalse();
+        assertThat(((View) mChildStatementBlockView).isSelected()).isFalse();
 
         mActivity.runOnUiThread(new Runnable() {
             @Override
@@ -233,23 +264,9 @@ public class BlockViewInActivityTest
         mInstrumentation.waitForIdleSync();
 
         // Only mRootView should be selected.
-        assertTrue(((View) mRootView).isSelected());
-        assertFalse(mFieldView.isSelected());
-        assertFalse(((View) mChildInputBlockView).isSelected());
-        assertFalse(((View) mChildStatementBlockView).isSelected());
-    }
-
-    private static boolean isDescendentOf(View child, View ancestor) {
-        assertNotNull(child);
-        assertNotNull(ancestor);
-
-        ViewParent parent = child.getParent();
-        while (parent != null && parent instanceof View) {
-            if (ancestor == parent) {
-                return true;
-            }
-            parent = ((View) parent).getParent();
-        }
-        return false;
+        assertThat(((View) mRootView).isSelected()).isTrue();
+        assertThat(mFieldView.isSelected()).isFalse();
+        assertThat(((View) mChildInputBlockView).isSelected()).isFalse();
+        assertThat(((View) mChildStatementBlockView).isSelected()).isFalse();
     }
 }

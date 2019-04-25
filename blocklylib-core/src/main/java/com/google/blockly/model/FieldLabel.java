@@ -18,15 +18,12 @@ package com.google.blockly.model;
 import android.text.TextUtils;
 
 import org.json.JSONObject;
-import org.xmlpull.v1.XmlSerializer;
-
-import java.io.IOException;
 
 /**
  * Adds a text to an Input. This can be used to add text to the block or label
  * another field. The text is not modifiable by the user.
  */
-public final class FieldLabel extends Field<FieldLabel.Observer> {
+public final class FieldLabel extends Field {
     private String mText;
 
     public FieldLabel(String name, String text) {
@@ -57,11 +54,11 @@ public final class FieldLabel extends Field<FieldLabel.Observer> {
      * should not be caused by user input. For user editable text fields use
      * {@link FieldInput} instead.
      */
-    public void setText(String text) {
-        if (!TextUtils.equals(text, mText)) {
+    public void setText(String newValue) {
+        if (!TextUtils.equals(newValue, mText)) {
             String oldText = mText;
-            mText = text;
-            onTextChanged(oldText, text);
+            mText = newValue;
+            fireValueChanged(oldText, mText);
         }
     }
 
@@ -75,26 +72,17 @@ public final class FieldLabel extends Field<FieldLabel.Observer> {
         return ""; // Label fields do not have value.
     }
 
-    private void onTextChanged(String oldText, String newText) {
-        for (int i = 0; i < mObservers.size(); i++) {
-            mObservers.get(i).onTextChanged(this, oldText, newText);
-        }
-    }
-
     /**
-     * Observer for listening to changes to an input field.
+     * Notify Observers of change, without firing ChangeEvent nor as an event group, since labels
+     * are not really value fields for state changes.
+     *
+     * @param oldText The original label text (not field value).
+     * @param newText The new label text (not field value).
      */
-    public interface Observer {
-        /**
-         * Called when the field's text changed.
-         * <p>
-         * Note: Label fields are not expected to be user editable and are not serialized by
-         * Blockly's core library.
-         *
-         * @param field The field that changed.
-         * @param oldText The field's previous text.
-         * @param newText The field's new text.
-         */
-        void onTextChanged(FieldLabel field, String oldText, String newText);
+    @Override
+    protected void fireValueChanged(final String oldText, final String newText) {
+        for (int i = 0; i < mObservers.size(); i++) {
+            mObservers.get(i).onValueChanged(this, oldText, newText);
+        }
     }
 }

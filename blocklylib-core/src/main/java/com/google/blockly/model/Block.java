@@ -15,107 +15,164 @@
 
 package com.google.blockly.model;
 
+import android.database.Observable;
+import android.os.Handler;
+import android.os.Looper;
+import android.support.annotation.IntDef;
+import android.support.annotation.NonNull;
 import android.support.annotation.Nullable;
-import android.support.annotation.VisibleForTesting;
 import android.text.TextUtils;
-import android.util.Log;
 
+import com.google.blockly.android.control.BlocklyController;
 import com.google.blockly.utils.BlockLoadingException;
+import com.google.blockly.utils.BlocklyXmlHelper;
 import com.google.blockly.utils.ColorUtils;
 
-import org.json.JSONArray;
-import org.json.JSONException;
 import org.json.JSONObject;
-import org.xmlpull.v1.XmlPullParser;
-import org.xmlpull.v1.XmlPullParserException;
 import org.xmlpull.v1.XmlSerializer;
 
 import java.io.IOException;
+import java.lang.annotation.Retention;
+import java.lang.ref.WeakReference;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
-import java.util.UUID;
+
+import static java.lang.annotation.RetentionPolicy.SOURCE;
 
 /**
  * Base class for a Blockly Block.
  */
-public class Block {
+public class Block extends Observable<Block.Observer> {
     private static final String TAG = "Block";
 
-    /** Array used for by {@link ColorUtils#parseColor(String, float[], int)} during I/O. **/
-    private static final float[] TEMP_IO_THREAD_FLOAT_ARRAY = new float[3];
+    // Observable attributes of possible concern to BlockViews.
+    @Retention(SOURCE)
+    @IntDef({
+            UPDATE_INPUTS_FIELDS_CONNECTIONS, UPDATE_COLOR, UPDATE_COMMENT, UPDATE_IS_SHADOW,
+            UPDATE_IS_DISABLED, UPDATE_IS_COLLAPSED, UPDATE_IS_EDITABLE, UPDATE_IS_DELETABLE,
+            UPDATE_TOOLTIP, UPDATE_CONTEXT_MENU, UPDATE_INPUTS_INLINE, UPDATE_IS_MOVEABLE
+    })
+    public @interface UpdateState {}
+    public static final int UPDATE_INPUTS_FIELDS_CONNECTIONS = 1 << 0;
+    public static final int UPDATE_COLOR = 1 << 1;  // TODO: Not implemented/emitted
+    public static final int UPDATE_COMMENT = 1 << 2;
+    public static final int UPDATE_IS_SHADOW = 1 << 3;
+    public static final int UPDATE_IS_DISABLED = 1 << 4;
+    public static final int UPDATE_IS_COLLAPSED = 1 << 5;
+    public static final int UPDATE_IS_EDITABLE = 1 << 6;
+    public static final int UPDATE_IS_DELETABLE = 1 << 7;
+    public static final int UPDATE_TOOLTIP = 1 << 8;  // TODO: Not implemented/emitted
+    public static final int UPDATE_CONTEXT_MENU = 1 << 9;  // TODO: Not implemented/emitted
+    public static final int UPDATE_INPUTS_INLINE = 1 << 10;
+    public static final int UPDATE_IS_MOVEABLE = 1 << 11;
+    public static final int UPDATE_WARNING = 1 << 12; // TODO: Not implemented/emitted
+
+    public interface Observer {
+        /**
+         * Called when any of the following block elements have changed, possibly triggering a
+         * change in the BlockView.
+         * <ul>
+         *     <li>Inputs</li>
+         *     <li>Fields</li>
+         *     <li>Mutator</li>
+         *     <li>Comment</li>
+         *     <li>Shadow state</li>
+         *     <li>Disabled state</li>
+         *     <li>Collapsed state</li>
+         *     <li>Editable state</li>
+         *     <li>Deletable state</li>
+         * </ul>
+         * @param block The block updated.
+         * @param updateStateMask A bit mask of {@link UpdateState} bits for the updated parts.
+         */
+        void onBlockUpdated(Block block, @UpdateState int updateStateMask);
+    }
 
     // These values are immutable once a block is created
-    private final String mUuid;
+    private final BlocklyController mController;
+    private final BlockFactory mFactory;
+    private final String mId;
     private final String mType;
-    private final int mCategory;
-    private final Connection mOutputConnection;
-    private final Connection mNextConnection;
-    private final Connection mPreviousConnection;
-    private final ArrayList<Input> mInputList;
-    private final ArrayList<Connection> mConnectionList;
-    private final int mColor;
     private boolean mIsShadow;
+    private JSONObject mStyle = null;  // WARNING: Often a mutable object shared by all blocks.
+
+    // Set by BlockFactory.applyMutator(). May only be set once.
+    private Mutator mMutator = null;
+    private String mMutation = null;
 
     // These values can be changed after creating the block
-    private String mTooltip;
-    private String mComment;
-    private boolean mHasContextMenu;
-    private boolean mDeletable;
-    private boolean mMovable;
-    private boolean mEditable;
-    private boolean mCollapsed;
-    private boolean mDisabled;
-    private boolean mInputsInline;
+    private int mColor = ColorUtils.DEFAULT_BLOCK_COLOR;
+    private List<Input> mInputList = Collections.<Input>emptyList();
+    private Connection mOutputConnection;
+    private Connection mNextConnection;
+    private Connection mPreviousConnection;
+    private List<Connection> mConnectionList = Collections.<Connection>emptyList();
+    private String mTooltip = null;
+    private String mComment = null;
+    private boolean mHasContextMenu = true;
+    private boolean mDeletable = true;
+    private boolean mMovable = true;
+    private boolean mEditable = true;
+    private boolean mCollapsed = false;
+    private boolean mDisabled = false;
+    private boolean mInputsInline = false;
 
     // Keep track of whether inputsInline has ever been changed.
     private boolean mInputsInlineModified = false;
 
+    private String mEventWorkspaceId = null;
+    private BlocklyController.EventsCallback mEventCallback = null;
+    private BlocklyController.EventsCallback mMemSafeCallback = null;
+
     /** Position of the block in the workspace. Only serialized for the root block. */
     private WorkspacePoint mPosition;
 
-    private Block(@Nullable String uuid, String name, int category, int color,
-                  Connection outputConnection, Connection nextConnection,
-                  Connection previousConnection, ArrayList<Input> inputList, boolean inputsInline,
-                  boolean inputsInlineModified) {
-        mUuid = (uuid != null) ? uuid : UUID.randomUUID().toString();
-        mType = name;
-        mCategory = category;
+    /**
+     * @param controller The controller for this Blockly instance.
+     * @param factory The factory creating this block.
+     * @param definition The definition this block instantiates.
+     * @param id The globally unique identifier for this block.
+     * @param isShadow Whether the block should be a shadow block (default input value block).
+     * @throws BlockLoadingException When the {@link BlockDefinition} throws errors.
+     */
+    Block(@Nullable BlocklyController controller, @NonNull BlockFactory factory,
+          @NonNull BlockDefinition definition, @NonNull String id, boolean isShadow)
+            throws BlockLoadingException {
+        if (controller == null || factory == null || definition == null || id == null) {
+            throw new IllegalArgumentException(
+                    "Tried to instantiate a block but controller, factory, definition, or id was "
+                    + "null.");
+        }
+        mController = controller;
+        mFactory = factory;
+        mId = id;
 
-        // This constructor reuses Connections and Inputs instead of copying them.  Consider using
-        // a BlockFactory and Builders instead of creating Blocks directly.
-        mOutputConnection = outputConnection;
-        mNextConnection = nextConnection;
-        mPreviousConnection = previousConnection;
+        mType = definition.getTypeName();
+        mStyle = definition.getStyleJson();
+        mColor = definition.getColor();
 
-        mInputList = inputList;
-        mInputsInline = inputsInline;
-        mInputsInlineModified = inputsInlineModified;
+        reshape(definition.createInputList(factory),
+                definition.createOutputConnection(),
+                definition.createPreviousConnection(),
+                definition.createNextConnection());
+        if (isShadow && containsVariableField()) {
+            throw new BlockLoadingException("Shadow blocks may not contain variable fields.");
+        }
+
+        mInputsInline = definition.isInputsInlineDefault();
+        mInputsInlineModified = false;
+
         mPosition = new WorkspacePoint(0, 0);
+        setShadow(isShadow);
 
-        mColor = color;
-
-        mConnectionList = new ArrayList<>();
-
-        if (mInputList != null) {
-            for (int i = 0; i < mInputList.size(); i++) {
-                Input in = mInputList.get(i);
-                in.setBlock(this);
-                if (in.getConnection() != null) {
-                    mConnectionList.add(in.getConnection());
-                }
-            }
+        String mutatorId = definition.getMutatorId();
+        if (mutatorId != null) {
+            factory.applyMutator(mutatorId, this);
         }
-        if (mOutputConnection != null) {
-            mOutputConnection.setBlock(this);
-            mConnectionList.add(mOutputConnection);
-        }
-        if (mPreviousConnection != null) {
-            mPreviousConnection.setBlock(this);
-            mConnectionList.add(mPreviousConnection);
-        }
-        if (mNextConnection != null) {
-            mNextConnection.setBlock(this);
-            mConnectionList.add(mNextConnection);
+        List<String> extensionNames = definition.getExtensionNames();
+        for (String name : extensionNames) {
+            factory.applyExtension(name, this);
         }
     }
 
@@ -130,7 +187,67 @@ public class Block {
      * @return The unique identifier of the block. Not for display.
      */
     public String getId() {
-        return mUuid;
+        return mId;
+    }
+
+    /**
+     * @return The controller for this Blockly instance.
+     */
+    @NonNull
+    public BlocklyController getController() {
+        return mController;
+    }
+
+    /**
+     * {@code getEventWorkspaceId} returns the id of the "workspace", as seen by the event
+     * framework. This might be the {@link Workspace#getId() workspace id}, if attached to a
+     * {@link Workspace}. It may also be {@link BlocklyEvent#WORKSPACE_ID_TOOLBOX} or
+     * {@link BlocklyEvent#WORKSPACE_ID_TRASH}. If the block is not attached to to any of these
+     * (directly or indirectly), the event workspace should be {@code null}.
+     *
+     * @return The id of the "workspace", as seen by the event framework. Null if not attached.
+     */
+    // TODO(#567) & WARNING: This value is not set appropriately in all cases.
+    @Nullable
+    public String getEventWorkspaceId() {
+        return mEventWorkspaceId;
+    }
+
+    /**
+     * Sets the block's "workspace" id, for the purposes of events. If the block is on a proper
+     * {@link Workspace}, it should be the {@link Workspace#getId()}. If the block is in the
+     * toolbox or trash, the value should be {@link BlocklyEvent#WORKSPACE_ID_TOOLBOX} or
+     * {@link BlocklyEvent#WORKSPACE_ID_TRASH}, respectively. When the block is detached, the event
+     * workspace should be set to {@code null}.
+     *
+     * Setting this values recursively sets the value on all child blocks.
+     *
+     * @param eventWorkspaceId The workspace id, as defined by event framework.
+     */
+    public void setEventWorkspaceId(String eventWorkspaceId) {
+        if (eventWorkspaceId == mEventWorkspaceId
+                || (mEventWorkspaceId != null && mEventWorkspaceId.equals(eventWorkspaceId))) {
+            return; // No-op
+        }
+        if (Looper.getMainLooper() != Looper.myLooper()) {
+            throw new IllegalStateException(
+                    "setEventWorkspaceId(..) must be called from main thread.");
+        }
+
+        mEventWorkspaceId = eventWorkspaceId;
+
+        for (Input input : mInputList) {
+            Block child = input.getConnectedBlock();
+            if (child != null) {
+                child.setEventWorkspaceId(eventWorkspaceId);
+            }
+        }
+        if (mNextConnection != null) {
+            Block child = mNextConnection.getTargetBlock();
+            if (child != null) {
+                child.setEventWorkspaceId(eventWorkspaceId);
+            }
+        }
     }
 
     /**
@@ -155,6 +272,13 @@ public class Block {
                 next.addAllBlockIds(outList);
             }
         }
+    }
+
+    /**
+     * @return The style definition for this block.
+     */
+    public JSONObject getStyle() {
+        return mStyle;
     }
 
     /**
@@ -183,7 +307,12 @@ public class Block {
      * @param editable
      */
     public void setEditable(boolean editable) {
+        if (editable == mEditable) {
+            return;
+        }
+        // TODO: Event support? No current spec for changes to "editable".
         mEditable = editable;
+        fireUpdate(UPDATE_IS_EDITABLE);
     }
 
     /**
@@ -203,7 +332,12 @@ public class Block {
      * @param movable
      */
     public void setMovable(boolean movable) {
+        if (mMovable == movable) {
+            return;
+        }
+        // TODO: Event support? No current spec for changes to "moveable".
         mMovable = movable;
+        fireUpdate(UPDATE_IS_MOVEABLE);
     }
 
     /**
@@ -223,7 +357,12 @@ public class Block {
      * @param deletable
      */
     public void setDeletable(boolean deletable) {
+        if (mDeletable == deletable) {
+            return;
+        }
+        // TODO: Event support? No current spec for changes to "deletable".
         mDeletable = deletable;
+        fireUpdate(UPDATE_IS_DELETABLE);
     }
 
     /**
@@ -263,8 +402,20 @@ public class Block {
      *
      * @param disabled
      */
-    public void setDisabled(boolean disabled) {
-        mDisabled = disabled;
+    public void setDisabled(final boolean disabled) {
+        if (mDisabled == disabled) {
+            return;
+        }
+        runAsPossibleEventGroup(new Runnable() {
+            @Override
+            public void run() {
+                mDisabled = disabled;
+
+                // Add change event before notifying observers that might add their own events.
+                maybeAddPendingChangeEvent(BlocklyEvent.ELEMENT_DISABLED, mDisabled);
+                fireUpdate(UPDATE_IS_DISABLED); // Block.Observers
+            }
+        });
     }
 
     /**
@@ -282,8 +433,20 @@ public class Block {
      *
      * @param collapsed Whether the block should be collapsed.
      */
-    public void setCollapsed(boolean collapsed) {
-        mCollapsed = collapsed;
+    public void setCollapsed(final boolean collapsed) {
+        if (collapsed == mCollapsed) {
+            return;
+        }
+        runAsPossibleEventGroup(new Runnable() {
+            @Override
+            public void run() {
+                mCollapsed = collapsed;
+
+                // Add change event before notifying observers that might add their own events.
+                maybeAddPendingChangeEvent(BlocklyEvent.ELEMENT_COLLAPSED, mCollapsed);
+                fireUpdate(UPDATE_IS_COLLAPSED);
+            }
+        });
     }
 
     /**
@@ -339,7 +502,10 @@ public class Block {
      * @param x The workspace x position.
      * @param y The workspace y position.
      */
-    public void setPosition(int x, int y) {
+    public void setPosition(float x, float y) {
+        if (Float.isNaN(x) || Float.isInfinite(x) || Float.isNaN(y) || Float.isInfinite(y)) {
+            throw new IllegalArgumentException("Position must be a real, finite number.");
+        }
         mPosition.x = x;
         mPosition.y = y;
     }
@@ -356,8 +522,22 @@ public class Block {
      *
      * @param comment The text of the comment.
      */
-    public void setComment(String comment) {
-        mComment = comment;
+    public void setComment(@Nullable final String comment) {
+        if (comment == mComment || (comment != null && comment.equals(mComment))) {
+            return;
+        }
+        runAsPossibleEventGroup(new Runnable() {
+            @Override
+            public void run() {
+                String oldValue = mComment;
+                mComment = comment;
+
+                // Add change event before notifying observers that might add their own events.
+                maybeAddPendingChangeEvent(
+                        BlocklyEvent.ELEMENT_COMMENT, /* field */ null, oldValue, mComment);
+                fireUpdate(UPDATE_COMMENT);
+            }
+        });
     }
 
     /**
@@ -389,11 +569,26 @@ public class Block {
     }
 
     /**
-     * Set flag for displaying inputs in-line.
+     * Set whether value inputs should be displayed inline (true), or on separate rows (false).
+     * @param inputsInline True if value inputs should be show in a single line. Otherwise, false.
      */
-    public void setInputsInline(boolean inputsInline) {
+    public void setInputsInline(final boolean inputsInline) {
+        // Mark modified state for next serialization, even if the value didn't actually change.
         mInputsInlineModified = true;
-        mInputsInline = inputsInline;
+
+        if (inputsInline == mInputsInline) {
+            return;
+        }
+        runAsPossibleEventGroup(new Runnable() {
+            @Override
+            public void run() {
+                mInputsInline = inputsInline;
+
+                // Add change event before notifying observers that might add their own events.
+                maybeAddPendingChangeEvent(BlocklyEvent.ELEMENT_INLINE, mInputsInline);
+                fireUpdate(UPDATE_INPUTS_INLINE);
+            }
+        });
     }
 
     /**
@@ -509,43 +704,39 @@ public class Block {
      *
      * @return A new block tree with a copy of this block as the root.
      */
+    @NonNull
     public Block deepCopy() {
-        // Build a copy of this block
-        Block copy = new Block.Builder(this).build();
-
-        // Build and connect a copy of the blocks attached to next
-        if (mNextConnection != null) {
-            copyConnection(mNextConnection, copy.mNextConnection);
+        try {
+            String xml = BlocklyXmlHelper.writeBlockToXml(this,
+                    IOOptions.WRITE_ALL_BLOCKS_WITHOUT_ID);
+            return BlocklyXmlHelper.loadOneBlockFromXml(xml, mFactory);
+        } catch (BlocklySerializerException | BlockLoadingException e) {
+            // This error indicates something is very wrong with the serialization / deserialization
+            // framework.  Allow this to bubble up as a RuntimeException.
+            throw new IllegalStateException("Failed to copy blocks.", e);
         }
-        // Build and connect a copy of the blocks attached to the inputs
-        for (int i = 0; i < mInputList.size(); i++) {
-            Input sourceInput = mInputList.get(i);
-            if (sourceInput.getConnection() == null) {
-                continue;
-            }
-            Input destInput = copy.getInputByName(sourceInput.getName());
-            copyConnection(sourceInput.getConnection(), destInput.getConnection());
-        }
-        return copy;
     }
 
     /**
      * Writes information about the editable parts of the block as XML.
      *
      * @param serializer The XmlSerializer to write to.
-     * @param rootBlock True if the block is a top level block, false otherwise.
+     * @param options I/O options.
      *
      * @throws IOException
      */
-    public void serialize(XmlSerializer serializer, boolean rootBlock) throws IOException {
+    public void serialize(XmlSerializer serializer, boolean rootBlock, IOOptions options)
+            throws IOException {
         serializer.startTag(null, mIsShadow ? "shadow" : "block")
-                .attribute(null, "type", mType)
-                .attribute(null, "id", mUuid);
+                .attribute(null, "type", mType);
+        if (options.isBlockIdWritten()) {
+            serializer.attribute(null, "id", mId);
+        }
 
         // The position of the block only needs to be saved if it is a top level block.
         if (rootBlock) {
-            serializer.attribute(null, "x", Integer.toString(mPosition.x))
-                    .attribute(null, "y", Integer.toString(mPosition.y));
+            serializer.attribute(null, "x", Float.toString(mPosition.x))
+                    .attribute(null, "y", Float.toString(mPosition.y));
         }
 
         if (isCollapsed()) {
@@ -571,15 +762,22 @@ public class Block {
             serializer.attribute(null, "inline", Boolean.toString(mInputsInline));
         }
 
+        // Serialize the mutator state before the inputs. The web code used by the code generator
+        // loads XML elements in order, and the mutation may update the available inputs or fields
+        // before the values are assigned.
+        if (mMutator != null) {
+            mMutator.serialize(serializer);
+        }
+
         for (int i = 0; i < mInputList.size(); i++) {
             if (mInputList.get(i) != null) {
-                mInputList.get(i).serialize(serializer);
+                mInputList.get(i).serialize(serializer, options);
             }
         }
 
-        if (getNextBlock() != null) {
+        if (options.isBlockChildWritten() && getNextBlock() != null) {
             serializer.startTag(null, "next");
-            getNextBlock().serialize(serializer, false);
+            getNextBlock().serialize(serializer, false, options);
             serializer.endTag(null, "next");
         }
 
@@ -589,6 +787,7 @@ public class Block {
     /**
      * @return The {@link Block} for the last non-shadow child in this sequence, possibly itself.
      */
+    @NonNull
     public Block getLastBlockInSequence() {
         Block last = this;
         Block next = this.getNextBlock();
@@ -609,6 +808,7 @@ public class Block {
      *
      * @return the {@link Connection} on the only input on the last block in the chain.
      */
+    @Nullable
     public Connection getLastUnconnectedInputConnection() {
         Block block = this;
 
@@ -637,6 +837,7 @@ public class Block {
      *
      * @return The highest block found.
      */
+    @NonNull
     public Block getRootBlock() {
         Block block = this;
         Block parent = block.getParentBlock();
@@ -675,18 +876,35 @@ public class Block {
      * @return The block connected to the output or previous {@link Connection}, if present.
      *         Otherwise null.
      */
+    @Nullable
     public Block getParentBlock() {
         Connection parentConnection = getParentConnection();
         return parentConnection == null ? null : parentConnection.getBlock();
     }
 
     /**
-     * Configures whether this block should be a shadow block. This should only be called during
-     * creation of the block.
-     *
-     * @param isShadow
+     * Sets an event callback that will receive {@link BlocklyEvent}s for the lifetime of the block.
+     * @param callback The block's callback, or null to unset.
      */
-    void setShadow(boolean isShadow) {
+    public void setEventCallback(@Nullable BlocklyController.EventsCallback callback) {
+        if (mMemSafeCallback != null) {
+            mController.removeCallback(mMemSafeCallback);
+            mMemSafeCallback = null;
+        }
+        mEventCallback = callback;
+        if (mEventCallback != null) {
+            mMemSafeCallback = new MemSafeEventsCallback(this);
+            mController.addCallback(mMemSafeCallback);
+        }
+    }
+
+    /**
+     * Configures whether this block should be a shadow block. This should only be called during
+     * block initialization.
+     *
+     * @param isShadow If true the block will act as a shadow.
+     */
+    public void setShadow(boolean isShadow) {
         if (mIsShadow == isShadow) {
             return;
         }
@@ -717,6 +935,248 @@ public class Block {
 
         // State change is valid. Proceed.
         mIsShadow = isShadow;
+        fireUpdate(UPDATE_IS_SHADOW);
+    }
+
+    /**
+     * @return The block's {@link Mutator} id, if any. Otherwise null.
+     * @see BlockFactory#applyMutator(String, Block)
+     */
+    @Nullable
+    public final String getMutatorId() {
+        return mMutator == null ? null : mMutator.getMutatorId();
+    }
+
+    /**
+     * @return The block's {@link Mutator}, if any. Otherwise null.
+     * @see BlockFactory#applyMutator(String, Block)
+     */
+    @Nullable
+    public final Mutator getMutator() {
+        return mMutator;
+    }
+
+    /**
+     * Updates the mutation value of the block. It requires the block to have an assigned
+     * {@link Mutator}, and the mutator must be able to parse the assigned string, or a
+     * {@link BlockLoadingException} will be thrown. The mutation string is a XML &lt;mutation&gt;
+     * tag in its serialized string form.
+     *
+     * @param newValue The new mutation value, a &lt;mutation&gt; tag in string form.
+     * @throws BlockLoadingException If the mutator is not able to parse the mutation.
+     */
+    public final void setMutation(@Nullable final String newValue) throws BlockLoadingException {
+        if (mMutator == null) {
+            throw new IllegalStateException("No mutator attached.");
+        }
+        final String oldValue = mMutation;
+        if (oldValue == newValue || (oldValue != null && oldValue.equals(newValue))) {
+            return;
+        }
+        final BlockLoadingException[] loadingException = {null};
+        mController.groupAndFireEvents(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    BlocklyXmlHelper.updateMutator(Block.this, mMutator, newValue);
+                    mMutation = newValue;
+                    mController.addPendingEvent(new BlocklyEvent.ChangeEvent(
+                            BlocklyEvent.ELEMENT_MUTATE, Block.this, /* field */ null,
+                            oldValue, newValue));
+                } catch (BlockLoadingException e) {
+                    loadingException[0] = e; // Runnable interface does not support exceptions
+                }
+            }
+        });
+        if (loadingException[0] != null) {
+            throw loadingException[0];
+        }
+    }
+
+    /**
+     * @return The string form of the mutation.
+     */
+    @Nullable
+    public final String getMutation() {
+        return mMutation;
+    }
+
+    /**
+     * {@code reshape()} updates the inputs and all connections with potentially new values,
+     * changing the shape of the block. This method should only be called by the constructor, or
+     * {@link Mutator}s.
+     * <p/>
+     * Changes to {@link Input} and their {@link Field} change by updating the whole input list.
+     * Inputs can be reused, and must be reused if blocks are to remain connected to a block.
+     * Removed inputs must be previously disconnected (moved or deleted), and added inputs must also
+     * be empty (i.e., not connect to child blocks).
+     * <p/>
+     * Similarly, {@link Connection}s that should remain connected should be reused, and
+     * added/removed connections must not be connected to another block. All connections must be
+     * constructed with the correct connection type for their position.
+     *
+     * @param newInputList The new list of inputs.
+     * @param updatedOutput The updated output connection, if any.
+     * @param updatedPrev The updated previous connection, if any.
+     * @param updatedNext The updated next connection, if any.
+     */
+    // TODO: Needs lots of tests.
+    public void reshape(@Nullable List<Input> newInputList,
+                        @Nullable Connection updatedOutput,
+                        @Nullable Connection updatedPrev,
+                        @Nullable Connection updatedNext) {
+        if (updatedOutput != null) {
+            if (updatedPrev != null) {
+                throw new IllegalArgumentException(
+                        "A block cannot have both an output connection and a previous connection.");
+            }
+            if (updatedOutput.getType() != Connection.CONNECTION_TYPE_OUTPUT) {
+                throw new IllegalArgumentException(
+                        "updatedOutput Connection type is not CONNECTION_TYPE_OUTPUT");
+            }
+        }
+        if (updatedPrev != null && updatedPrev.getType() != Connection.CONNECTION_TYPE_PREVIOUS) {
+            throw new IllegalArgumentException(
+                    "updatedPrev Connection type is not CONNECTION_TYPE_PREVIOUS");
+        }
+        if (updatedNext != null && updatedNext.getType() != Connection.CONNECTION_TYPE_NEXT) {
+            throw new IllegalArgumentException(
+                    "updatedNext Connection type is not CONNECTION_TYPE_NEXT");
+        }
+
+        if (newInputList == null) {
+            newInputList = Collections.<Input>emptyList();
+        }
+
+        List<Connection> connectionList = new ArrayList<>();
+        List<Input> oldInputs = mInputList;
+
+        for (Input in : oldInputs) {
+            if (!newInputList.contains(in)) {
+                if (in.getConnectedBlock() != null) {
+                    // This is a critical failure, as it may leave inputs in an invalid state if
+                    // another input was already removed (i.e., setBlock(null) was already called).
+                    throw new IllegalStateException(
+                            "Cannot remove input \"" + in.getName() + "\" while connected.");       // TODO: Make test for this
+                }
+                in.setBlock(null); // Reset the block reference in removed Inputs and Fields.
+            }
+        }
+        for (Input in : newInputList) {
+            if (!oldInputs.contains(in)) {
+                if (in.getConnectedBlock() != null) {
+                    // This is a critical failure, as it may leave inputs in an invalid state if
+                    // an old input was removed above (i.e., setBlock(null) was already called).
+                    throw new IllegalStateException(
+                            "Cannot add input \"" + in.getName() + "\" while connected.");          // TODO: Make test for this
+                }
+                in.setBlock(this);
+            }
+            Connection inputConn = in.getConnection();
+            if (inputConn != null) {
+                connectionList.add(inputConn);
+            }
+        }
+
+        if (updatedOutput != null) {
+            updatedOutput.setBlock(this);
+            connectionList.add(updatedOutput);
+        }
+        if (updatedPrev != null) {
+            updatedPrev.setBlock(this);
+            connectionList.add(updatedPrev);
+        }
+        if (updatedNext != null) {
+            updatedNext.setBlock(this);
+            connectionList.add(updatedNext);
+        }
+
+        mInputList = Collections.unmodifiableList(newInputList);
+        mOutputConnection = updatedOutput;
+        mPreviousConnection = updatedPrev;
+        mNextConnection = updatedNext;
+        mConnectionList = Collections.unmodifiableList(connectionList);
+
+        fireUpdate(UPDATE_INPUTS_FIELDS_CONNECTIONS);
+    }
+
+    /**
+     * Convenience form of {@link #reshape(List, Connection, Connection, Connection)} that preserves
+     * output, previous, and next connections. This method should only be called by
+     * {@link Mutator}s.
+     * @param newInputList The new list of inputs.
+     */
+    public void reshape(@Nullable List<Input> newInputList) {
+        reshape(newInputList, mOutputConnection, mPreviousConnection, mNextConnection);
+    }
+
+    /**
+     * This method returns a string describing this Block in developer terms (type
+     * name and ID; English only). Intended to on be used in console logs and errors.
+     * @return The description.
+     */
+    public String toString() {
+        String description = (mIsShadow ? "shadow" : "block");
+        if (mType != null) {
+            description = "\"" + mType + "\" " + description;  // Prefix
+        }
+        if (mId != null) {
+            description += " (id=\"" + mId + "\")"; // Postfix
+        }
+        return description;
+    };
+
+    /**
+     * Sets the mutator for this block.  Called from BlockFractory, and can only be called once (for
+     * now).
+     * @param mutator The mutator implementation.
+     *
+     */
+    /*package private*/ void setMutator(@NonNull Mutator mutator) {
+        if (mMutator != null) {
+            throw new IllegalStateException("Cannot change mutators on a block.");
+        }
+        mMutator = mutator;
+        mutator.attachToBlock(this);
+    }
+
+    /**
+     * Connects to given child and shadow (even if occluded), or throws a descriptive
+     * BlockLoadingException for an invalid connection.
+     * @param tagName The string name of the connection, as seen in XML.
+     * @param thisConn The connection point on this block.
+     * @param child The child block to connect.
+     * @param shadow The child shadow to connect.
+     * @throws BlockLoadingException If any connection fails.
+     */
+    void connectOrThrow(String tagName, Connection thisConn, Block child, Block shadow)
+            throws BlockLoadingException {
+        if (child != null) {
+            if (mIsShadow) {
+                throw new BlockLoadingException(
+                        this + " cannot be a parent to non-shadow " + child);
+            }
+            Connection childConn = child.getUpwardsConnection();
+            try {
+                thisConn.connect(childConn);
+            } catch (IllegalArgumentException e) {
+                throw new BlockLoadingException(
+                        this + ": Invalid " + tagName + " connection to " + child, e);
+            }
+        }
+        if (shadow != null) {
+            Connection shadowConn = shadow.getUpwardsConnection();
+            try {
+                thisConn.setShadowConnection(shadowConn);
+                if (!thisConn.isConnected()) {
+                    // If there is no standard child block, so connect the shadow
+                    thisConn.connect(shadowConn);
+                }
+            } catch (IllegalArgumentException e) {
+                throw new BlockLoadingException(
+                        this + ": Invalid " + tagName + " shadow connection to " + child, e);
+            }
+        }
     }
 
     /**
@@ -766,10 +1226,9 @@ public class Block {
      * % is escaped (eg "Escaped %%5 has no args")
      *
      * @param message The message to tokenize.
-     *
      * @return A list of Strings that are either an arg or plain text.
      */
-    /*package*/
+    // package scoped for testing
     static List<String> tokenizeMessage(String message) {
         ArrayList<String> result = new ArrayList<>();
         if (TextUtils.isEmpty(message)) {
@@ -831,15 +1290,69 @@ public class Block {
     /**
      * @return True if any input in this block includes a variable field. Otherwise false.
      */
-    boolean containsVariableField() {
+    private boolean containsVariableField() {
         return containsVariableField(mInputList);
+    }
+
+    /**
+     * Notifies Observers of a structure change.
+     * @param updateStateMask A bit mask of {@link UpdateState} bits for the updated parts.
+     */
+    private void fireUpdate(@UpdateState int updateStateMask) {
+        // Allow mObservers to update while notifying prior observers.
+        ArrayList<Observer> observers = new ArrayList<>(mObservers);
+        for (Observer observer: observers) {
+            observer.onBlockUpdated(this, updateStateMask);
+        }
+    }
+
+    /**
+     * Runs the provided closure. If {@link #mEventWorkspaceId} is set, it will run it through
+     * {@link BlocklyController#groupAndFireEvents(Runnable)}.
+     * @see Field#runAsPossibleEventGroup(Runnable)
+     *
+     * @param runnable Code to run.
+     */
+    /* package private */ void runAsPossibleEventGroup(Runnable runnable) {
+        if (mEventWorkspaceId == null) {
+            runnable.run();
+        } else {
+            mController.groupAndFireEvents(runnable);
+        }
+    }
+
+    /**
+     * Creates and emits a {@link BlocklyEvent.ChangeEvent} only if {@link #mEventWorkspaceId} is
+     * set.
+     * @param element The identifying element type string.
+     * @param field The field changed, if any.
+     * @param oldValue The prior value, in serialized string form.
+     * @param newValue The new value, in serialized string form.
+     */
+    /* package private */ void maybeAddPendingChangeEvent(
+            String element, Field field, String oldValue, String newValue) {
+        if (mEventWorkspaceId != null) {
+            mController.addPendingEvent(
+                    new BlocklyEvent.ChangeEvent(element, this, field, oldValue, newValue));
+        }
+    }
+
+    /**
+     * Creates and emits a {@link BlocklyEvent.ChangeEvent} only if {@link #mEventWorkspaceId} is
+     * set.
+     */
+    private void maybeAddPendingChangeEvent(String element, boolean newValue) {
+        if (mEventWorkspaceId != null) {
+            mController.addPendingEvent(new BlocklyEvent.ChangeEvent(
+                    element, this, null, Boolean.toString(!newValue), Boolean.toString(newValue)));
+        }
     }
 
     /**
      * @param inputs {@link Input}s to check for variable fields.
      * @return True if any input in {@code inputs} includes a variable field. Otherwise false.
      */
-    private static boolean containsVariableField(ArrayList<Input> inputs) {
+    private static boolean containsVariableField(List<Input> inputs) {
         // Verify there's not a variable field
         int inputCount = inputs.size();
         for (int i = 0; i < inputCount; i++) {
@@ -856,210 +1369,62 @@ public class Block {
         return false;
     }
 
-    public static class Builder {
-        private final WorkspacePoint mPosition;
-        // These values are immutable once a block is created
-        private String mUuid;
-        private String mType;
-        private int mCategory;
-        private int mColor = ColorUtils.DEFAULT_BLOCK_COLOR;
-        private Connection mOutputConnection;
-        private Connection mNextConnection;
-        private Connection mPreviousConnection;
-        private ArrayList<Input> mInputs;
-        // These values can be changed after creating the block
-        private String mTooltip;
-        private String mComment;
-        private boolean mHasContextMenu = false;
-        private boolean mInputsInline = false;
-        private boolean mInputsInlineModified = false;
-        private boolean mIsShadow = false;
-        private boolean mDeletable = true;
-        private boolean mMovable = true;
-        private boolean mEditable = true;
-        private boolean mCollapsed = false;
-        private boolean mDisabled = false;
-
-        public Builder(String type) {
-            mType = type;
-            mInputs = new ArrayList<>();
-            mPosition = new WorkspacePoint(0, 0);
+    @Override
+    protected void finalize() throws Throwable {
+        if (mMutator != null) {
+            mMutator.detachFromBlock();
+            mMutator = null;
         }
-
-        public Builder(Block block) {
-            this(block.mType);
-            mColor = block.mColor;
-            mCategory = block.mCategory;
-
-            mOutputConnection = Connection.cloneConnection(block.mOutputConnection);
-            mNextConnection = Connection.cloneConnection(block.mNextConnection);
-            mPreviousConnection = Connection.cloneConnection(block.mPreviousConnection);
-
-            mInputs = new ArrayList<>();
-            Input newInput;
-            for (int i = 0; i < block.mInputList.size(); i++) {
-                Input oldInput = block.mInputList.get(i);
-                newInput = oldInput.clone();
-                if (newInput != null) {
-                    mInputs.add(newInput);
-                }
-            }
-
-            mInputsInline = block.mInputsInline;
-            mInputsInlineModified = block.mInputsInlineModified;
-
-            // TODO: Reconsider the defaults for these
-            mTooltip = block.mTooltip;
-            mComment = block.mComment;
-            mHasContextMenu = block.mHasContextMenu;
-            mIsShadow = block.mIsShadow;
-            mDeletable = block.mDeletable;
-            mMovable = block.mMovable;
-            mEditable = block.mEditable;
-            mCollapsed = block.mCollapsed;
-            mDisabled = block.mDisabled;
-            mPosition.x = block.mPosition.x;
-            mPosition.y = block.mPosition.y;
-        }
-
-        public Builder setType(String type) {
-            mType = type;
-            return this;
-        }
-
-        public Builder setUuid(String uuid) {
-            mUuid = uuid;
-            return this;
-        }
-
-        public Builder setColorHue(int hue) {
-            mColor = ColorUtils.getBlockColorForHue(hue, TEMP_IO_THREAD_FLOAT_ARRAY);
-            return this;
-        }
-
-        public Builder setColor(int color) {
-            mColor = color;
-            return this;
-        }
-
-        public Builder setCategory(int category) {
-            mCategory = category;
-            return this;
-        }
-
-        public Builder setOutput(Connection outputConnection) {
-            if (this.mPreviousConnection != null) {
-                throw new IllegalStateException(
-                        "Block cannot have both output and previous connection.");
-            }
-            this.mOutputConnection = outputConnection;
-            return this;
-        }
-
-        public Builder setNext(Connection nextConnection) {
-            this.mNextConnection = nextConnection;
-            return this;
-        }
-
-        public Builder setPrevious(Connection previousConnection) {
-            if (this.mOutputConnection != null) {
-                throw new IllegalStateException(
-                        "Block cannot have both previous and output connection.");
-            }
-            this.mPreviousConnection = previousConnection;
-            return this;
-        }
-
-        public Builder addInput(Input input) {
-            mInputs.add(input);
-            return this;
-        }
-
-        public Builder setInputs(ArrayList<Input> inputs) {
-            if (inputs == null) {
-                throw new IllegalArgumentException("Inputs may not be null.");
-            }
-            this.mInputs = inputs;
-            return this;
-        }
-
-        public Builder setInputsInline(boolean inputsInline) {
-            this.mInputsInline = inputsInline;
-            this.mInputsInlineModified = true;
-            return this;
-        }
-
-        public Builder setTooltip(String tooltip) {
-            mTooltip = tooltip;
-            return this;
-        }
-
-        public Builder setComment(String comment) {
-            mComment = comment;
-            return this;
-        }
-
-        public Builder setHasContextMenu(boolean hasContextMenu) {
-            mHasContextMenu = hasContextMenu;
-            return this;
-        }
-
-        public Builder setShadow(boolean isShadow) {
-            mIsShadow = isShadow;
-            return this;
-        }
-
-        public Builder setDeletable(boolean canDelete) {
-            mDeletable = canDelete;
-            return this;
-        }
-
-        public Builder setMovable(boolean canMove) {
-            mMovable = canMove;
-            return this;
-        }
-
-        public Builder setEditable(boolean canEdit) {
-            mEditable = canEdit;
-            return this;
-        }
-
-        public Builder setCollapsed(boolean collapsed) {
-            mCollapsed = collapsed;
-            return this;
-        }
-
-        public Builder setDisabled(boolean disabled) {
-            mDisabled = disabled;
-            return this;
-        }
-
-        public Builder setPosition(int x, int y) {
-            mPosition.x = x;
-            mPosition.y = y;
-            return this;
-        }
-
-        public Block build() {
-            if (mIsShadow && containsVariableField(mInputs)) {
-                throw new IllegalArgumentException("Shadow blocks cannot contain variables");
-            }
-            Block b = new Block(mUuid, mType, mCategory, mColor, mOutputConnection, mNextConnection,
-                    mPreviousConnection, mInputs, mInputsInline, mInputsInlineModified);
-            b.mTooltip = mTooltip;
-            b.mComment = mComment;
-            b.mHasContextMenu = mHasContextMenu;
-            b.mIsShadow = mIsShadow;
-            b.mDeletable = mDeletable;
-            b.mMovable = mMovable;
-            b.mEditable = mEditable;
-            b.mCollapsed = mCollapsed;
-            b.mDisabled = mDisabled;
-            b.mPosition = mPosition;
-
-            return b;
-        }
-
+        super.finalize();
     }
 
+    /**
+     * This {@link BlocklyController.EventsCallback} implementation is designed to prevent
+     * {@link #setEventCallback the block's EventCallback} from creating a reference from the
+     * {@link BlocklyController controller} that prevents garbage collection. If the block or the
+     * block's callback disappear, this callback will disappear.
+     */
+    private static class MemSafeEventsCallback implements BlocklyController.EventsCallback {
+        private final BlocklyController mController;
+        private final WeakReference<Block> mBlockRef;
+        // Do not refer to the inner callback directly.
+
+        MemSafeEventsCallback(@NonNull Block block) {
+            mController = block.getController();
+            mBlockRef = new WeakReference<Block>(block);
+        }
+
+        @Override
+        public int getTypesBitmask() {
+            Block block = mBlockRef.get();
+            if (block != null && block.mEventCallback != null) {
+                // I feel fantastic and I'm.... still alive.
+                return block.mEventCallback.getTypesBitmask();
+            } else {
+                removeSelf();
+                return 0;
+            }
+        }
+
+        @Override
+        public void onEventGroup(List<BlocklyEvent> events) {
+            Block block = mBlockRef.get();
+            if (block != null && block.mEventCallback != null) {
+                // And believe me I am... still alive.
+                block.mEventCallback.onEventGroup(events);
+            } else {
+                removeSelf();
+            }
+        }
+
+        private void removeSelf() {
+            // Don't change the listener while the listener list is being processed.
+            new Handler().post(new Runnable() {
+                @Override
+                public void run() {
+                    mController.removeCallback(MemSafeEventsCallback.this);
+                }
+            });
+        }
+    }
 }

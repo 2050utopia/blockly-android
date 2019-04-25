@@ -15,144 +15,182 @@
 
 package com.google.blockly.android.control;
 
-import android.test.AndroidTestCase;
-
+import com.google.blockly.android.BlocklyTestCase;
+import com.google.blockly.android.TestUtils;
 import com.google.blockly.model.Block;
-import com.google.blockly.model.Field;
+import com.google.blockly.model.BlockFactory;
+import com.google.blockly.model.BlockTemplate;
 import com.google.blockly.model.FieldInput;
-import com.google.blockly.model.Input;
+import com.google.blockly.utils.BlockLoadingException;
+
+import org.junit.Before;
+import org.junit.Rule;
+import org.junit.Test;
+import org.junit.rules.ExpectedException;
 
 import java.util.List;
+
+import static com.google.common.truth.Truth.assertThat;
 
 /**
  * Tests for {@link ProcedureManager}.
  */
-public class ProcedureManagerTest extends AndroidTestCase {
+public class ProcedureManagerTest extends BlocklyTestCase {
     private static final String PROCEDURE_NAME = "procedure name";
 
+    private BlocklyController mController;
+
+    private BlockFactory mFactory;
     private ProcedureManager mProcedureManager;
     private Block mProcedureDefinition;
     private Block mProcedureReference;
 
-    @Override
+    @Before
     public void setUp() throws Exception {
-        mProcedureManager = new ProcedureManager();
+        this.configureForUIThread();
 
-        Input nameInput = new Input.InputDummy("dummyName", Input.ALIGN_CENTER);
-        Field nameField = new FieldInput("name", PROCEDURE_NAME);
-        nameInput.add(nameField);
-        mProcedureDefinition = new Block.Builder(
-                ProcedureManager.PROCEDURE_DEFINITION_PREFIX + "test")
-                .addInput(nameInput)
-                .build();
-        mProcedureReference = new Block.Builder(
-                ProcedureManager.PROCEDURE_REFERENCE_PREFIX + "test")
-                .addInput(nameInput)
-                .build();
+        mController = new BlocklyController.Builder(getContext()).build();
+        mFactory = mController.getBlockFactory();
+        TestUtils.loadProcedureBlocks(mController);
+        mProcedureManager = mController.getWorkspace().getProcedureManager();
+
+        mProcedureDefinition = buildNoReturnDefinition(PROCEDURE_NAME);
+        mProcedureReference = buildCaller(PROCEDURE_NAME);
+
+        assertThat(mProcedureDefinition).isNotNull();
+        assertThat(mProcedureReference).isNotNull();
     }
 
+    @Rule
+    public ExpectedException thrown = ExpectedException.none();
+
+    @Test
     public void testAddProcedureDefinition() {
         mProcedureManager.addDefinition(mProcedureDefinition);
-        assertTrue(mProcedureManager.containsDefinition(mProcedureDefinition));
-        assertNotNull(mProcedureManager.getReferences(PROCEDURE_NAME));
-        assertEquals(0, mProcedureManager.getReferences(PROCEDURE_NAME).size());
+        assertThat(mProcedureManager.containsDefinition(mProcedureDefinition)).isTrue();
+
+        List<Block> references = mProcedureManager.getReferences(PROCEDURE_NAME);
+        assertThat(references).isNotNull();
+        assertThat(references.size()).isEqualTo(0);
     }
 
-    public void testAddProcedureDefinitionTwice() {
+    @Test
+    public void testAddProcedureDefinitionTwice() throws BlockLoadingException {
         mProcedureManager.addDefinition(mProcedureDefinition);
 
-        try {
-            mProcedureManager.addDefinition(mProcedureDefinition);
-            fail("Adding the same block twice should be an error");
-        } catch (IllegalStateException expected) {
-            // expected
-        }
+        thrown.expect(IllegalStateException.class);
+        mProcedureManager.addDefinition(mProcedureDefinition);
 
         // Adding two block definitions with the same name should change the name of the new
         // block.
-        Block secondProcedureDefinition = (new Block.Builder(mProcedureDefinition)).build();
+        Block secondProcedureDefinition =
+                mFactory.obtainBlockFrom(new BlockTemplate().copyOf(mProcedureDefinition));
 
         mProcedureManager.addDefinition(secondProcedureDefinition);
-        assertFalse(PROCEDURE_NAME.equalsIgnoreCase(
+        assertThat(PROCEDURE_NAME.equalsIgnoreCase(
                 ((FieldInput) secondProcedureDefinition.getFieldByName("name"))
-                        .getText()));
+                        .getText())).isFalse();
     }
 
+    @Test
     public void testAddProcedureReference() {
         mProcedureManager.addDefinition(mProcedureDefinition);
 
         mProcedureManager.addReference(mProcedureReference);
-        assertTrue(mProcedureManager.hasReferences(mProcedureDefinition));
+        assertThat(mProcedureManager.hasReferences(mProcedureDefinition)).isTrue();
     }
 
+    @Test
     // Remove definition should also remove all references.
     public void testRemoveProcedureDefinition() {
         mProcedureManager.addDefinition(mProcedureDefinition);
-        assertTrue(mProcedureManager.containsDefinition(mProcedureDefinition));
+        assertThat(mProcedureManager.containsDefinition(mProcedureDefinition)).isTrue();
 
         mProcedureManager.removeDefinition(mProcedureDefinition);
-        assertFalse(mProcedureManager.containsDefinition(mProcedureDefinition));
-        assertFalse(mProcedureManager.hasReferences(mProcedureDefinition));
+        assertThat(mProcedureManager.containsDefinition(mProcedureDefinition)).isFalse();
+        assertThat(mProcedureManager.hasReferences(mProcedureDefinition)).isFalse();
 
         mProcedureManager.addDefinition(mProcedureDefinition);
         mProcedureManager.addReference(mProcedureReference);
         List<Block> references =
                 mProcedureManager.removeDefinition(mProcedureDefinition);
-        assertNotNull(references);
-        assertEquals(1, references.size());
-        assertEquals(mProcedureReference, references.get(0));
+        assertThat(references).isNotNull();
+        assertThat(references.size()).isEqualTo(1);
+        assertThat(references.get(0)).isEqualTo(mProcedureReference);
 
-        assertFalse(mProcedureManager.containsDefinition(mProcedureDefinition));
-        assertFalse(mProcedureManager.hasReferences(mProcedureDefinition));
+        assertThat(mProcedureManager.containsDefinition(mProcedureDefinition)).isFalse();
+        assertThat(mProcedureManager.hasReferences(mProcedureDefinition)).isFalse();
     }
 
+    @Test
     public void testRemoveProcedureReference() {
         mProcedureManager.addDefinition(mProcedureDefinition);
         mProcedureManager.addReference(mProcedureReference);
 
         mProcedureManager.removeReference(mProcedureReference);
-        assertFalse(mProcedureManager.hasReferences(mProcedureReference));
+        assertThat(mProcedureManager.hasReferences(mProcedureReference)).isFalse();
     }
 
-    public void testMissingNames() {
-        mProcedureDefinition = new Block.Builder(
-                ProcedureManager.PROCEDURE_DEFINITION_PREFIX + "test")
-                .build();
-        mProcedureReference = new Block.Builder(
-                ProcedureManager.PROCEDURE_REFERENCE_PREFIX + "test")
-                .build();
+    @Test
+    public void testMissingNames() throws BlockLoadingException {
+        mProcedureDefinition = mFactory.obtainBlockFrom(new BlockTemplate().fromJson(
+                "{\"type\":\"no field named name\"}"));
 
-        try {
-            mProcedureManager.addDefinition(mProcedureDefinition);
-            fail("Expected an exception when defining a procedure with no name field.");
-        } catch (IllegalArgumentException expected) {
-            // expected
-        }
+        thrown.expect(IllegalArgumentException.class);
+        mProcedureManager.addDefinition(mProcedureDefinition);
     }
 
-    public void testNoDefinition() {
-        try {
-            mProcedureManager.addReference(mProcedureReference);
-            fail("Expected an exception when referencing a procedure with no definition.");
-        } catch (IllegalStateException expected) {
-            // expected
-        }
-
-        try {
-            mProcedureManager.removeDefinition(mProcedureDefinition);
-            fail("Expected an exception when removing a block with no definition.");
-        } catch (IllegalStateException expected) {
-            // expected
-        }
-
+    @Test
+    public void testAddReferenceToUndefined() {
+        thrown.expect(IllegalStateException.class);
+        mProcedureManager.addReference(mProcedureReference);
     }
 
+    @Test
+    public void testRemoveNoUndefined() {
+        thrown.expect(IllegalStateException.class);
+        mProcedureManager.removeDefinition(mProcedureDefinition);
+    }
+
+    @Test
     public void testNoReference() {
-        try {
-            mProcedureManager.removeReference(mProcedureReference);
-            fail("Expected an exception when removing a nonexistent procedure reference.");
-        } catch (IllegalStateException expected) {
-            // expected
-        }
+        thrown.expect(IllegalStateException.class);
+        mProcedureManager.removeReference(mProcedureReference);
+    }
+
+    private Block buildCaller(final String procName) throws BlockLoadingException {
+        final Block[] result = {null};
+        runAndSync(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    Block block = mFactory.obtainBlockFrom(
+                            new BlockTemplate(ProcedureManager.CALL_NO_RETURN_BLOCK_TYPE)
+                                    .withMutation("<mutation name=\"" + procName + "\"/>"));
+                    result[0] = block;
+                } catch (BlockLoadingException e) {
+                    throw new IllegalStateException(e);
+                }
+            }
+        });
+        return result[0];
+    }
+
+    private Block buildNoReturnDefinition(final String procName) throws BlockLoadingException {
+        final Block[] result = { null };
+        runAndSync(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    Block block = mFactory.obtainBlockFrom(
+                            new BlockTemplate(ProcedureManager.DEFINE_NO_RETURN_BLOCK_TYPE)
+                                .withMutation("<mutation name=\"" + procName + "\"/>"));
+                    result[0] = block;
+                } catch (BlockLoadingException e) {
+                    throw new IllegalStateException(e);
+                }
+            }
+        });
+        return result[0];
     }
 }

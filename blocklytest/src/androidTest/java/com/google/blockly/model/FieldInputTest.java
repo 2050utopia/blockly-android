@@ -14,25 +14,58 @@
  */
 package com.google.blockly.model;
 
-import android.test.AndroidTestCase;
+import org.junit.Before;
+import org.junit.Test;
+
+import static com.google.common.truth.Truth.assertThat;
 
 /**
  * Tests for {@link FieldInput}.
  */
-public class FieldInputTest extends AndroidTestCase {
-    public void testFieldInput() {
-        FieldInput field = new FieldInput("field name", "start text");
-        assertEquals(Field.TYPE_INPUT, field.getType());
-        assertEquals("field name", field.getName());
-        assertEquals("start text", field.getText());
+public class FieldInputTest {
+    static final String FIELD_NAME = "Robert";
+    static final String INITIAL_VALUE = "start text";
 
-        field.setText("new text");
-        assertEquals("new text", field.getText());
+    FieldInput mField;
 
-        // xml parsing
-        assertTrue(field.setFromString("newest text"));
-        assertEquals("newest text", field.getText());
+    @Before
+    public void setUp() {
+        mField = new FieldInput(FIELD_NAME, INITIAL_VALUE);
+    }
 
-        assertNotSame(field, field.clone());
+    @Test
+    public void testConstructor() {
+        assertThat(mField.getType()).isEqualTo(Field.TYPE_INPUT);
+        assertThat(mField.getName()).isEqualTo(FIELD_NAME);
+        assertThat(mField.getText()).isEqualTo(INITIAL_VALUE);
+    }
+
+    @Test
+    public void testSetText() {
+        mField.setText("new text");
+        assertThat(mField.getText()).isEqualTo("new text");
+    }
+
+    @Test
+    public void testSetFromString() {
+        assertThat(mField.setFromString("newest text")).isTrue();
+        assertThat(mField.getText()).isEqualTo("newest text");
+    }
+
+    @Test
+    public void testClone() {
+        FieldInput clone = mField.clone();
+        assertThat(mField).isNotSameAs(clone);
+        assertThat(clone.getName()).isEqualTo(mField.getName());
+        assertThat(clone.getText()).isEqualTo(mField.getText());
+    }
+
+    @Test
+    public void testObserverEvents() {
+        FieldTestHelper.testObserverEvent(mField,
+                /* New value */ "asdf",
+                /* Expected old value */ INITIAL_VALUE,
+                /* Expected new value */ "asdf");
+        FieldTestHelper.testObserverNoEvent(mField);
     }
 }

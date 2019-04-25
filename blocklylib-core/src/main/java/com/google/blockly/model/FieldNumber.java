@@ -18,41 +18,48 @@ package com.google.blockly.model;
 import android.text.TextUtils;
 import android.util.Log;
 
+import com.google.blockly.model.BlocklyEvent.ChangeEvent;
 import com.google.blockly.utils.BlockLoadingException;
 
 import org.json.JSONException;
 import org.json.JSONObject;
-import org.xmlpull.v1.XmlSerializer;
 
-import java.io.IOException;
 import java.text.DecimalFormat;
+import java.text.DecimalFormatSymbols;
+import java.text.NumberFormat;
 import java.util.Arrays;
+import java.util.Locale;
 
 /**
  * A 'field_number' type of field, for an editable number.
  */
-public final class FieldNumber extends Field<FieldNumber.Observer> {
+public final class FieldNumber extends Field {
     private static final String TAG = "FieldNumber";
 
     public static final double NO_CONSTRAINT = Double.NaN;
 
+    private static final DecimalFormatSymbols PERIOD_AS_DECIMAL =
+            new DecimalFormatSymbols(new Locale("en", "us"));
     /**
-     * This formatter is used by fields without precision, and to count precision's significant
-     * digits past the decimal point.  Unlike {@link Double#toString}, it displays as many
-     * fractional digits as possible.
+     * This formatter is used by fields without precision or grouping punctuation. It is used to
+     * count precision's significant digits past the decimal point.  Unlike {@link Double#toString},
+     * it displays as many fractional digits as possible.
      */
     private static final DecimalFormat NAIVE_DECIMAL_FORMAT;
     static {
-        char[] sigDigts = new char[100];
+        // Force as many significant digits as possible in a naive decimal format, using the period
+        // as the decimal.
+        char[] sigDigts = new char[324];  // Double.MIN_VALUE approx. 4.9E-324
         Arrays.fill(sigDigts, '#');
         NAIVE_DECIMAL_FORMAT
-                = new DecimalFormat(new StringBuffer("0.").append(sigDigts).toString());
+                = new DecimalFormat(new StringBuffer("0.").append(sigDigts).toString(),
+                        PERIOD_AS_DECIMAL);
     }
 
     /**
      * This formatter is used when precision is a multiple of 1.
      */
-    private static final DecimalFormat INTEGER_DECIMAL_FORMAT = new DecimalFormat("0");
+    protected static final DecimalFormat INTEGER_DECIMAL_FORMAT = new DecimalFormat("0");
 
     private double mValue;
     private double mMin = NO_CONSTRAINT;
@@ -66,6 +73,11 @@ public final class FieldNumber extends Field<FieldNumber.Observer> {
 
     public FieldNumber(String name) {
         super(name, TYPE_NUMBER);
+    }
+
+    public FieldNumber(String name, double min, double max, double precision) {
+        this(name);
+        setConstraints(min, max, precision);
     }
 
     public static FieldNumber fromJson(JSONObject json) throws BlockLoadingException {
@@ -103,6 +115,17 @@ public final class FieldNumber extends Field<FieldNumber.Observer> {
         return copy;
     }
 
+    /**
+     * Sets the constraints on valid number values.
+     * <p/>
+     * Changing the constraints may trigger a {@link ChangeEvent}, even if the value does not
+     * change.
+     *
+     * @param min The minimum allowed value, inclusive.
+     * @param max The maximum allowed value, inclusive.
+     * @param precision The precision of allowed values. Valid values are multiples of this number,
+     *                  such as 1, 0.1, 100, or 0.125.
+     */
     public void setConstraints(double min, double max, double precision) {
         if (max == Double.POSITIVE_INFINITY || Double.isNaN(max)) {
             max = NO_CONSTRAINT;
@@ -172,11 +195,39 @@ public final class FieldNumber extends Field<FieldNumber.Observer> {
                 char[] sigDigitsFormat = new char[significantDigits];
                 Arrays.fill(sigDigitsFormat, '#');
                 sb.append(sigDigitsFormat);
-                mFormatter = new DecimalFormat(sb.toString());
+                mFormatter = new DecimalFormat(sb.toString(), PERIOD_AS_DECIMAL);
             }
         }
 
         setValueImpl(mValue, true);
+    }
+
+    /**
+     * Retrieves (possibly constructing) a NumberFormat configured for both the field constraints
+     * and the provided Locale.
+     * @param locale The locale to construct a number formatter for.
+     * @return A NumberFormat configured for both the field constraints and the Locale.
+     */
+    public NumberFormat getNumberFormatForLocale(Locale locale) {
+        if (!hasPrecision()) {
+            NumberFormat localizedNumFormat = NumberFormat.getInstance(locale);
+            localizedNumFormat.setMaximumFractionDigits(324);  // Double.MIN_VALUE approx. 4.9E-324
+            return localizedNumFormat;
+        }
+        if (mIntegerPrecision) {
+            return NumberFormat.getIntegerInstance(locale);
+        }
+
+        String precisionStr = NAIVE_DECIMAL_FORMAT.format(mPrecision);
+        int decimalChar = precisionStr.indexOf('.');
+        if (decimalChar == -1) {
+            return NumberFormat.getIntegerInstance(locale);
+        }
+        int significantDigits = precisionStr.length() - decimalChar;
+
+        NumberFormat localizedNumFormat = NumberFormat.getInstance(locale);
+        localizedNumFormat.setMaximumFractionDigits(significantDigits);
+        return localizedNumFormat;
     }
 
     /**
@@ -186,7 +237,7 @@ public final class FieldNumber extends Field<FieldNumber.Observer> {
      *
      * @param text The text value for this field.
      *
-     * @return
+     * @return True if the value parsed without error and the value has been updated.
      */
     @Override
     public boolean setFromString(String text) {
@@ -216,13 +267,6 @@ public final class FieldNumber extends Field<FieldNumber.Observer> {
     }
 
     /**
-     * @return The formatted (human readable) string version of the input.
-     */
-    public CharSequence getFormattedValue() {
-        return mFormatter.format(mValue);
-    }
-
-    /**
      * Sets the number in this Field.  The resulting value of this field may differ from
      * {@code newValue} to adapt to the assigned min, max, and precision constraints.
      *
@@ -244,33 +288,23 @@ public final class FieldNumber extends Field<FieldNumber.Observer> {
         } else if (hasMaximum() && newValue > mEffectiveMax) {
             newValue = mEffectiveMax;
         }
-        if (newValue != mValue) {
-            double oldValue = mValue;
+        if (newValue != mValue || onConstraintsChanged) {
+            String oldStrValue = getSerializedValue();
             mValue = newValue;
-            if (onConstraintsChanged) {
-                // Notify constraints change before notifying value change.
-                onConstraintChanged();
-            }
-            onValueChanged(oldValue, newValue);
-        } else if (onConstraintsChanged) {
-            onConstraintChanged();
+            String newStrValue = getSerializedValue();
+
+            fireValueChanged(oldStrValue, newStrValue);
         }
     }
 
     @Override
     public String getSerializedValue() {
-        return Double.toString(mValue);
-    }
-
-    private void onValueChanged(double oldValue, double newValue) {
-        for (int i = 0; i < mObservers.size(); i++) {
-            mObservers.get(i).onValueChanged(this, oldValue, newValue);
-        }
-    }
-
-    private void onConstraintChanged() {
-        for (int i = 0; i < mObservers.size(); i++) {
-            mObservers.get(i).onConstraintsChanged(this);
+        if (mValue % 1.0 == 0.0) {
+            // Don't render the decimal point.
+            return INTEGER_DECIMAL_FORMAT.format(mValue);
+        } else {
+            // Render as many decimal places as necessary. Don't abbreviate.
+            return NAIVE_DECIMAL_FORMAT.format(mValue);
         }
     }
 
@@ -319,26 +353,5 @@ public final class FieldNumber extends Field<FieldNumber.Observer> {
     /** @return Whether the precision (and thus the value) is an integer. */
     public boolean isInteger() {
         return mIntegerPrecision;
-    }
-
-    /**
-     * Observer for listening to changes to a {@link FieldNumber}.
-     */
-    public interface Observer {
-        /**
-         * Called when the field's value changed.
-         *
-         * @param field The field that changed.
-         * @param oldValue The field's previous value.
-         * @param newValue The field's new value.
-         */
-        void onValueChanged(FieldNumber field, double oldValue, double newValue);
-
-        /**
-         * Called when the field's constraints changed.
-         *
-         * @param field The field that changed.
-         */
-        void onConstraintsChanged(FieldNumber field);
     }
 }

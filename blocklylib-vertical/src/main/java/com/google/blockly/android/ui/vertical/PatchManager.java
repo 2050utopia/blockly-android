@@ -15,17 +15,24 @@
 
 package com.google.blockly.android.ui.vertical;
 
+import android.content.Context;
 import android.content.res.Configuration;
 import android.content.res.Resources;
 import android.graphics.Rect;
 import android.graphics.drawable.NinePatchDrawable;
+import android.support.annotation.Nullable;
+import android.support.v4.content.ContextCompat;
 
+import com.google.blockly.android.ui.BlockGroup;
 import com.google.blockly.model.Block;
 
 /**
- * Helper class to manage patches, including 9-patches, for drawing blocks.
+ * Helper class to load and manage 9-patches and other drawables. Each block shape is composed of
+ * multiple shaded 9-patches that together make the overall shape. The PatchManager constructs new
+ * drawables with shared backing bitmaps to minimize Blocky's memory footprint.
  */
 public class PatchManager {
+    private final Context mContext;
     private final Resources mResources;
 
     private final Rect mTempRect = new Rect();
@@ -36,9 +43,11 @@ public class PatchManager {
 
     // Vertical block padding - this space accomodates top and bottom block boundaries.
     int mBlockTopDefaultPadding;
+    int mBlockTopHatPadding;
     int mBlockTopOutputPadding;
     int mBlockTopPreviousPadding;
-    int mBlockTopMinPadding;
+    int mBlockTopDefaultMinPadding;
+    int mBlockTopHatMinPadding;
     int mBlockBottomPadding;
 
     // Convenience fields - these are the sums of mBlockStartPadding and mBlockEndPadding, or
@@ -105,8 +114,17 @@ public class PatchManager {
     // Minimum height of a block.
     int mMinBlockHeight;
 
-    PatchManager(Resources resources, boolean rtl, boolean useHat) {
-        mResources = resources;
+    /**
+     * Constructs a new PatchManager to load and manage 9-patch resources used to compose the block
+     * shapes.
+     * @param context The activity's context.
+     * @param rtl Whether to use right-to-left resources.
+     * @param useHat Whether to use event hats when blocks have neither previous or output
+     *               connectors.  See {@link R.drawable#top_start_hat} nine-patch.
+     */
+    PatchManager(Context context, boolean rtl, boolean useHat) {
+        mContext = context;
+        mResources = mContext.getResources();
         computePatchLayoutMeasures(rtl, useHat);
     }
 
@@ -117,7 +135,7 @@ public class PatchManager {
      * @return The drawable for the requested patch.
      */
     public NinePatchDrawable getPatchDrawable(int id) {
-        return (NinePatchDrawable) mResources.getDrawable(id);
+        return (NinePatchDrawable) ContextCompat.getDrawable(mContext, id);
     }
 
     /**
@@ -149,12 +167,17 @@ public class PatchManager {
         }
         mNextConnectorHeight = mTempRect.bottom - mBlockBottomPadding;
 
-        final NinePatchDrawable topLeftDefaultPatch = getPatchDrawable(
-                useHat ? R.drawable.top_start_hat : R.drawable.top_start_default);
+        final NinePatchDrawable topLeftDefaultPatch = getPatchDrawable(R.drawable.top_start_default);
         if (!topLeftDefaultPatch.getPadding(mTempRect)) {
             throw new IllegalStateException("9-patch 'top_start_default' does not have padding.");
         };
         mBlockTopDefaultPadding = mTempRect.top;
+
+        final NinePatchDrawable topLeftHatPatch = getPatchDrawable(R.drawable.top_start_hat);
+        if (!topLeftHatPatch.getPadding(mTempRect)) {
+            throw new IllegalStateException("9-patch 'top_start_hat' does not have padding.");
+        };
+        mBlockTopHatPadding = mTempRect.top;
 
         final NinePatchDrawable topLeftPreviousPatch =
                 getPatchDrawable(R.drawable.top_start_previous);
@@ -171,12 +194,14 @@ public class PatchManager {
         mOutputConnectorWidth = (rtl ? mTempRect.right : mTempRect.left) - mBlockStartPadding;
         mOutputConnectorHeight = topLeftOutputPatch.getIntrinsicHeight();
 
-        mBlockTopMinPadding = Math.min(mBlockTopDefaultPadding,
+        mBlockTopDefaultMinPadding = Math.min(mBlockTopDefaultPadding,
+                Math.min(mBlockTopOutputPadding, mBlockTopPreviousPadding));
+        mBlockTopHatMinPadding = Math.min(mBlockTopHatPadding,
                 Math.min(mBlockTopOutputPadding, mBlockTopPreviousPadding));
 
         // Block height must be sufficient to at least accommodate vertical padding and an Output
         // connector.
-        mMinBlockHeight = mBlockTopMinPadding + mOutputConnectorHeight + mBlockBottomPadding;
+        mMinBlockHeight = mBlockTopDefaultMinPadding + mOutputConnectorHeight + mBlockBottomPadding;
 
         final NinePatchDrawable statementTopPatch = getPatchDrawable(R.drawable.statementinput_top);
         if (!statementTopPatch.getPadding(mTempRect)) {
@@ -211,18 +236,25 @@ public class PatchManager {
         mBlockTotalPaddingX = mBlockStartPadding + mBlockEndPadding;
     }
 
-    int computeBlockTopPadding(Block block) {
+    int computeBlockGroupTopPadding(@Nullable BlockGroup blockGroup) {
+        if (blockGroup == null) {
+            return mBlockTopDefaultPadding;
+        }
+        BlockView firstBlockView = (BlockView) blockGroup.getFirstBlockView();
+        return firstBlockView == null ? mBlockTopDefaultPadding
+                : computeBlockTopPadding(firstBlockView);
+    }
+
+    int computeBlockTopPadding(BlockView blockView) {
+        Block block = blockView.getBlock();
         if (block.getPreviousConnection() != null) {
             return mBlockTopPreviousPadding;
         } else if (block.getOutputConnection() != null) {
             return mBlockTopOutputPadding;
+        } else if (blockView.hasCap()) {
+            return mBlockTopHatPadding;
+        } else {
+            return mBlockTopDefaultPadding;
         }
-
-        // else...
-        return mBlockTopDefaultPadding;
-    }
-
-    int computeBlockTotalPaddingY(Block block) {
-        return computeBlockTopPadding(block) + mBlockBottomPadding;
     }
 }

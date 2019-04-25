@@ -15,75 +15,87 @@
 
 package com.google.blockly.android.control;
 
-import android.test.AndroidTestCase;
+import org.junit.Before;
+import org.junit.Test;
 
-import static android.test.MoreAsserts.assertNotEqual;
+import static com.google.common.truth.Truth.assertThat;
 
 /**
  * Tests for {@link NameManager}.
  */
-public class NameManagerTest extends AndroidTestCase {
+public class NameManagerTest {
     private NameManager mNameManager;
 
-    @Override
-    public void setUp() throws Exception {
+    @Before
+     public void setUp() throws Exception {
         mNameManager = new NameManager.ProcedureNameManager();
     }
 
+    @Test
     public void testGenerateUniqueName() throws Exception {
         String name1 = mNameManager.generateUniqueName("string", true /* addName */);
-        assertNotEqual(name1, mNameManager.generateUniqueName("string", true /* addName */));
+        assertThat(mNameManager.generateUniqueName("string", true /* addName */))
+                .isNotEqualTo(name1);
 
-        assertEquals("foo", mNameManager.generateUniqueName("foo", true /* addName */));
-        assertEquals("foo2", mNameManager.generateUniqueName("foo", true /* addName */));
-        assertEquals("foo3", mNameManager.generateUniqueName("foo2", true /* addName */));
-        assertEquals("222", mNameManager.generateUniqueName("222", true /* addName */));
-        assertEquals("223", mNameManager.generateUniqueName("222", true /* addName */));
+        assertThat(mNameManager.generateUniqueName("foo", true /* addName */)).isEqualTo("foo");
+        assertThat(mNameManager.generateUniqueName("foo", true /* addName */)).isEqualTo("foo2");
+        assertThat(mNameManager.generateUniqueName("foo2", true /* addName */)).isEqualTo("foo3");
+        assertThat(mNameManager.generateUniqueName("222", true /* addName */)).isEqualTo("222");
+        assertThat(mNameManager.generateUniqueName("222", true /* addName */)).isEqualTo("223");
     }
 
+    @Test
+    public void testGenerateUniqueNameCaseInsensitive() {
+        assertThat(mNameManager.generateUniqueName("FOO", true /* addName */)).isEqualTo("FOO");
+    }
+
+    @Test
     public void testCaseInsensitive() {
         String name1 = mNameManager.generateUniqueName("string", true /* addName */);
         String name2 = mNameManager.generateUniqueName("String", true /* addName */);
-        assertNotEqual(name1, name2);
-        assertNotEqual(name1.toLowerCase(), name2.toLowerCase());
+        assertThat(name2).isNotEqualTo(name1);
+        assertThat(name2.toLowerCase()).isNotEqualTo(name1.toLowerCase());
     }
 
+    @Test
     public void testListFunctions() {
         mNameManager.addName("foo");
-        assertEquals(1, mNameManager.getUsedNames().size());
+        assertThat(mNameManager.getUsedNames().size()).isEqualTo(1);
         mNameManager.generateUniqueName("bar", true /* addName */);
-        assertEquals(2, mNameManager.getUsedNames().size());
+        assertThat(mNameManager.getUsedNames().size()).isEqualTo(2);
 
         mNameManager.generateUniqueName("bar", false /* addName */);
-        assertEquals(2, mNameManager.getUsedNames().size());
+        assertThat(mNameManager.getUsedNames().size()).isEqualTo(2);
 
-        mNameManager.clearUsedNames();
-        assertTrue(mNameManager.getUsedNames().isEmpty());
+        mNameManager.clear();
+        assertThat(mNameManager.getUsedNames().isEmpty()).isTrue();
     }
 
+    @Test
     public void testGenerateVariableName() {
         NameManager.VariableNameManager nameManager = new NameManager.VariableNameManager();
-        assertEquals("i", nameManager.generateVariableName(false /* addName */));
-        assertEquals("i", nameManager.generateVariableName(true /* addName */));
-        assertEquals("j", nameManager.generateVariableName(true /* addName */));
-        assertEquals("k", nameManager.generateVariableName(true /* addName */));
-        assertEquals("m", nameManager.generateVariableName(true /* addName */));
+        assertThat(nameManager.generateVariableName(false /* addName */)).isEqualTo("i");
+        assertThat(nameManager.generateVariableName(true /* addName */)).isEqualTo("i");
+        assertThat(nameManager.generateVariableName(true /* addName */)).isEqualTo("j");
+        assertThat(nameManager.generateVariableName(true /* addName */)).isEqualTo("k");
+        assertThat(nameManager.generateVariableName(true /* addName */)).isEqualTo("m");
 
         for (int i = 0; i < 21; i++) {
             nameManager.generateVariableName(true /* addName */);
         }
 
-        assertEquals("i2", nameManager.generateVariableName(true /* addName */));
+        assertThat(nameManager.generateVariableName(true /* addName */)).isEqualTo("i2");
 
         nameManager.addName("j2");
-        assertEquals("k2", nameManager.generateVariableName(true /* addName */));
+        assertThat(nameManager.generateVariableName(true /* addName */)).isEqualTo("k2");
     }
 
+    @Test
     public void testRemove() {
         mNameManager.addName("foo");
-        assertTrue(mNameManager.contains("FOO"));
+        assertThat(mNameManager.contains("FOO")).isTrue();
         mNameManager.remove("Foo");
-        assertFalse(mNameManager.contains("foo"));
+        assertThat(mNameManager.contains("foo")).isFalse();
         // Remove something that wasn't there; expect no problems.
         mNameManager.remove("foo");
     }

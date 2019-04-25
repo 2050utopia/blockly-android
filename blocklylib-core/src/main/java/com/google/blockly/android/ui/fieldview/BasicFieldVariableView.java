@@ -20,11 +20,9 @@ import android.database.DataSetObserver;
 import android.os.Handler;
 import android.support.annotation.IntDef;
 import android.support.annotation.LayoutRes;
-import android.text.TextUtils;
+import android.support.v7.widget.AppCompatSpinner;
 import android.util.AttributeSet;
-import android.util.Log;
 import android.widget.ArrayAdapter;
-import android.widget.Spinner;
 import android.widget.SpinnerAdapter;
 import android.widget.TextView;
 
@@ -32,17 +30,20 @@ import com.google.blockly.android.R;
 import com.google.blockly.android.control.NameManager;
 import com.google.blockly.model.Field;
 import com.google.blockly.model.FieldVariable;
+import com.google.blockly.utils.LangUtils;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
+import java.util.SortedSet;
 
 /**
  * Renders a dropdown field containing the workspace's variables as part of a Block.
  */
-public class BasicFieldVariableView extends Spinner implements FieldView, VariableChangeView {
-    protected FieldVariable.Observer mFieldObserver = new FieldVariable.Observer() {
+public class BasicFieldVariableView extends AppCompatSpinner
+        implements FieldView, VariableChangeView {
+    protected Field.Observer mFieldObserver = new Field.Observer() {
         @Override
-        public void onVariableChanged(FieldVariable field, String oldVar, String newVar) {
+        public void onValueChanged(Field field, String oldValue, String newValue) {
             refreshSelection();
         }
     };
@@ -138,16 +139,12 @@ public class BasicFieldVariableView extends Spinner implements FieldView, Variab
         mAdapter = (VariableViewAdapter) adapter;
         super.setAdapter(adapter);
 
-        if (adapter != null) {
-            if (mVariableField != null) {
-                refreshSelection();
-            }
+        if (mAdapter != null) {
+            refreshSelection();
             mAdapter.registerDataSetObserver(new DataSetObserver() {
                 @Override
                 public void onChanged() {
-                    if (mVariableField != null) {
-                        refreshSelection();
-                    }
+                    refreshSelection();
                 }
             });
         }
@@ -175,8 +172,8 @@ public class BasicFieldVariableView extends Spinner implements FieldView, Variab
                 @Override
                 public void run() {
                     if (mVariableField != null) {
-                        setSelection(mAdapter
-                                .getOrCreateVariableIndex(mVariableField.getVariable()));
+                        setSelection(
+                                mAdapter.getOrCreateVariableIndex(mVariableField.getVariable()));
                     }
                 }
             });
@@ -187,7 +184,7 @@ public class BasicFieldVariableView extends Spinner implements FieldView, Variab
      * An implementation of {@link ArrayAdapter} that wraps the
      * {@link NameManager.VariableNameManager} to create the variable item views.
      */
-    public static class VariableViewAdapter extends ArrayAdapter<String> {
+    public static class VariableViewAdapter extends FieldAdapter<String> {
         @Retention(RetentionPolicy.SOURCE)
         @IntDef({ACTION_SELECT_VARIABLE, ACTION_RENAME_VARIABLE, ACTION_DELETE_VARIABLE})
         public @interface VariableAdapterType{}
@@ -196,20 +193,24 @@ public class BasicFieldVariableView extends Spinner implements FieldView, Variab
         public static final int ACTION_DELETE_VARIABLE = 2;
 
         private final NameManager mVariableNameManager;
+        private final SortedSet<String> mVars;
         private final String mRenameString;
-        private final String mDeleteString;
+        private AppCompatSpinner mSpinner;
 
         /**
          * @param variableNameManager The name manager containing the variables.
          * @param context A context for inflating layouts.
          * @param resource The {@link TextView} layout to use when inflating items.
+         * @param mSpinner Spinner this is being used in
          */
         public VariableViewAdapter(Context context, NameManager variableNameManager,
-                                   @LayoutRes int resource) {
-            super(context, resource);
+                                   @LayoutRes int resource, AppCompatSpinner mSpinner) {
+            super(context, resource, mSpinner);
+            this.mSpinner = mSpinner;
+
             mVariableNameManager = variableNameManager;
-            mRenameString = context.getString(R.string.rename_variable);
-            mDeleteString = context.getString(R.string.delete_variable);
+            mVars = mVariableNameManager.getUsedNames();
+
             refreshVariables();
             variableNameManager.registerObserver(new DataSetObserver() {
                 @Override
@@ -217,41 +218,54 @@ public class BasicFieldVariableView extends Spinner implements FieldView, Variab
                     refreshVariables();
                 }
             });
+            mRenameString = LangUtils.interpolate("%{BKY_RENAME_VARIABLE}");
         }
 
         /**
-         * Retrieves the index for the given variable name, creating a new variable if it is not found.
+         * This constructor is for compatibility reasons, or for whe it is not in a Spinner.
+         *
+         * @param variableNameManager The name manager containing the variables.
+         * @param context A context for inflating layouts.
+         * @param resource The {@link TextView} layout to use when inflating items.
+         */
+        public VariableViewAdapter(Context context, NameManager variableNameManager,
+                @LayoutRes int resource) {
+            this(context, variableNameManager, resource, null);
+        }
+
+        /**
+         * Retrieves the index for the given variable name, creating a new variable if it is not
+         * found.
          *
          * @param variableName The name of the variable to retrieve.
          * @return The index of the variable.
          */
         public int getOrCreateVariableIndex(String variableName) {
-            int count = mVariableNameManager.size();
-            for (int i = 0; i < count; i++) {
-                if (variableName.equalsIgnoreCase(getItem(i))) {
+            String existing = mVariableNameManager.getExisting(variableName);
+            if (existing != null) {
+                return getIndexForVarName(existing);
+            } else {
+                // No match found.  Create it.
+                variableName = mVariableNameManager.makeValidName(
+                        /* suggested */ variableName, /* fallback */ variableName);
+                mVariableNameManager.addName(variableName);
+                int insertionIndex = getIndexForVarName(variableName);
+
+                notifyDataSetChanged();
+                return insertionIndex;
+            }
+        }
+
+        private int getIndexForVarName(String expected) {
+            int i = 0;
+            for (String varName : mVars) {
+                if (varName.equals(expected)) {
                     return i;
                 }
+                ++i;
             }
-
-            // No match found.  Create it.
-            mVariableNameManager.addName(variableName);
-
-            // Reindex, finding the new index along the way.
-            count = mVariableNameManager.size();
-            clear();
-            int insertionIndex = -1;
-            for (int i = 0; i < count; i++) {
-                add(mVariableNameManager.get(i));
-                if (variableName.equals(getItem(i))) {
-                    insertionIndex = i;
-                }
-            }
-            if (insertionIndex == -1) {
-                throw new IllegalStateException("Variable not found after add.");
-            }
-
-            notifyDataSetChanged();
-            return insertionIndex;
+            throw new IllegalArgumentException(
+                    "Expected variable name \"" + expected + "\" not found.");
         }
 
         @Override
@@ -262,6 +276,9 @@ public class BasicFieldVariableView extends Spinner implements FieldView, Variab
 
         @Override
         public String getItem(int index) {
+            if (index == -1) {
+                index = 0;
+            }
             int count = super.getCount();
             if (index >= count + 2 || index < 0) {
                 throw new IndexOutOfBoundsException("There is no item at index " + index
@@ -273,7 +290,7 @@ public class BasicFieldVariableView extends Spinner implements FieldView, Variab
             if (index == count) {
                 return mRenameString;
             } else {
-                return mDeleteString;
+                return LangUtils.interpolate("%{BKY_DELETE_VARIABLE}").replace("%1", mSpinner != null && mSpinner.getSelectedItemPosition() != -1 ? getItem(mSpinner.getSelectedItemPosition()) : "");
             }
         }
 
@@ -281,8 +298,8 @@ public class BasicFieldVariableView extends Spinner implements FieldView, Variab
         int getVariableAction(int index) {
             int count = super.getCount();
             if (index >= count + 2 || index < 0) {
-                throw new IndexOutOfBoundsException("There is no item at index " + index + ". Count is "
-                        + count);
+                throw new IndexOutOfBoundsException("There is no item at index " + index + "."
+                        + " Count is " + count);
             }
             if (index < count) {
                 return ACTION_SELECT_VARIABLE;
@@ -291,7 +308,6 @@ public class BasicFieldVariableView extends Spinner implements FieldView, Variab
             } else {
                 return ACTION_DELETE_VARIABLE;
             }
-
         }
 
         /**
@@ -299,8 +315,8 @@ public class BasicFieldVariableView extends Spinner implements FieldView, Variab
          */
         private void refreshVariables() {
             clear();
-            for (int i = 0; i < mVariableNameManager.size(); i++) {
-                add(mVariableNameManager.get(i));
+            for (String varName : mVars) {
+                add(varName);
             }
             notifyDataSetChanged();
         }

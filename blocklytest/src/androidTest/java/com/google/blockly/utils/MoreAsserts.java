@@ -1,16 +1,13 @@
 package com.google.blockly.utils;
 
-import junit.framework.Assert;
+import static com.google.common.truth.Truth.assertWithMessage;
 
 /**
  * Aseerts used by Blockly's test code.
  */
 public class MoreAsserts {
     public static void assertStringNotEmpty(String mesg, String str) {
-        if (str == null) {
-            Assert.fail(mesg + " Found null string.");
-        } else if(str.length() == 0) {
-            Assert.fail(mesg + " Found empty string.");
-        }
+        assertWithMessage(mesg + " Found null string").that(str).isNotNull();
+        assertWithMessage(mesg + " Found empty string").that(str).isNotEmpty();
     }
 }

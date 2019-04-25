@@ -16,30 +16,37 @@ package com.google.blockly.android.ui;
 
 import android.app.Instrumentation;
 import android.content.pm.ActivityInfo;
-import android.test.ActivityInstrumentationTestCase2;
-import android.widget.ImageButton;
+import android.support.test.InstrumentationRegistry;
+import android.support.test.rule.ActivityTestRule;
 
 import com.google.blockly.android.BlocklyTestActivity;
 import com.google.blockly.android.R;
 
+import org.junit.Before;
+import org.junit.Rule;
+import org.junit.Test;
+
+import static com.google.common.truth.Truth.assertThat;
+
 /**
  * Test Activity lifecycle events using {@link BlocklyTestActivity}.
  */
-public class BlocklyActivityTest extends ActivityInstrumentationTestCase2<BlocklyTestActivity> {
-    private BlocklyTestActivity mActivity;
+public class BlocklyActivityTest {
     private Instrumentation mInstrumentation;
+    private BlocklyTestActivity mActivity;
 
-    public BlocklyActivityTest() {
-        super(BlocklyTestActivity.class);
-    }
+    @Rule
+    public ActivityTestRule<BlocklyTestActivity> mActivityRule =
+        new ActivityTestRule<>(BlocklyTestActivity.class);
 
-    @Override
+    @Before
     public void setUp() {
-        mActivity = getActivity();
-        mInstrumentation = getInstrumentation();
+        mInstrumentation = InstrumentationRegistry.getInstrumentation();
+        mActivity = mActivityRule.getActivity();
     }
 
     // Test switching around device orientation to make sure there are no crashes.
+    @Test
     public void testSwitchDeviceOrientation() {
         mInstrumentation.waitForIdleSync();
         mActivity.setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
@@ -57,6 +64,7 @@ public class BlocklyActivityTest extends ActivityInstrumentationTestCase2<Blockl
     }
 
     // Test zooming into workspace, then out, then reset.
+    @Test
     public void testZoomInOutReset() {
         mInstrumentation.waitForIdleSync();
         final WorkspaceView workspaceView = (WorkspaceView) mActivity.findViewById(R.id.workspace);
@@ -66,9 +74,9 @@ public class BlocklyActivityTest extends ActivityInstrumentationTestCase2<Blockl
         mActivity.runOnUiThread(new Runnable() {
             @Override
             public void run() {
-                assertEquals(1.0f, virtualWorkspaceView.getViewScale(), 1e-5);
+                assertThat(virtualWorkspaceView.getViewScale()).isWithin(1e-5f).of(1.0f);
                 mActivity.getController().zoomIn();
-                assertTrue(virtualWorkspaceView.getViewScale() > 1.0f);
+                assertThat(virtualWorkspaceView.getViewScale() > 1.0f).isTrue();
             }
         });
 
@@ -76,7 +84,7 @@ public class BlocklyActivityTest extends ActivityInstrumentationTestCase2<Blockl
             @Override
             public void run() {
                 mActivity.getController().zoomOut();
-                assertEquals(1.0f, virtualWorkspaceView.getViewScale(), 1e-5);
+                assertThat(virtualWorkspaceView.getViewScale()).isWithin(1e-5f).of(1.0f);
             }
         });
 
@@ -84,7 +92,7 @@ public class BlocklyActivityTest extends ActivityInstrumentationTestCase2<Blockl
             @Override
             public void run() {
                 mActivity.getController().zoomOut();
-                assertTrue(virtualWorkspaceView.getViewScale() < 1.0f);
+                assertThat(virtualWorkspaceView.getViewScale() < 1.0f).isTrue();
             }
         });
 
@@ -92,7 +100,7 @@ public class BlocklyActivityTest extends ActivityInstrumentationTestCase2<Blockl
             @Override
             public void run() {
                 mActivity.getController().recenterWorkspace();
-                assertEquals(1.0f, virtualWorkspaceView.getViewScale(), 1e-5);
+                assertThat(virtualWorkspaceView.getViewScale()).isWithin(1e-5f).of(1.0f);
             }
         });
         mInstrumentation.waitForIdleSync();

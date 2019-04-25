@@ -25,11 +25,13 @@ import java.util.List;
 
 /**
  * Basic implementation of AbstractBlocklyActivity that demonstrates applying styles. This demo
- * uses an Activity style defined in the manifest XML. Alternatively, Activities can override
- * {@link #getStyleResId()} to change the style used in {@link #onCreateController()}.
+ * uses an Activity style defined in the manifest XML.
  */
 public class StylesActivity extends AbstractBlocklyActivity {
     private static final String TAG = "StylesActivity";
+
+    private static final String SAVE_FILENAME = "styles_workspace.xml";
+    private static final String AUTOSAVE_FILENAME = "styles_workspace_temp.xml";
 
     CodeGenerationRequest.CodeGeneratorCallback mCodeGeneratorCallback =
             new LoggingCodeGeneratorCallback(this, TAG);
@@ -61,13 +63,25 @@ public class StylesActivity extends AbstractBlocklyActivity {
         return mCodeGeneratorCallback;
     }
 
+    /**
+     * Optional override of the save path, since this demo Activity has multiple Blockly
+     * configurations.
+     * @return Workspace save path used by this Activity.
+     */
     @Override
-    protected void onInitBlankWorkspace() {
-        // TODO: (#22) Remove this override when variables are supported properly
-        getController().addVariable("item");
-        getController().addVariable("leo");
-        getController().addVariable("don");
-        getController().addVariable("mike");
-        getController().addVariable("raf");
+    @NonNull
+    protected String getWorkspaceSavePath() {
+        return SAVE_FILENAME;
+    }
+
+    /**
+     * Optional override of the auto-save path, since this demo Activity has multiple Blockly
+     * configurations.
+     * @return Workspace auto-save path used by this Activity.
+     */
+    @Override
+    @NonNull
+    protected String getWorkspaceAutosavePath() {
+        return AUTOSAVE_FILENAME;
     }
 }

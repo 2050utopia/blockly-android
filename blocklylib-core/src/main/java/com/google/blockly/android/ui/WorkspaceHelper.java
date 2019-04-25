@@ -15,19 +15,28 @@
 
 package com.google.blockly.android.ui;
 
+import android.annotation.SuppressLint;
+import android.app.Activity;
 import android.content.Context;
+import android.content.ContextWrapper;
 import android.content.res.Resources;
 import android.graphics.Point;
 import android.graphics.Rect;
+import android.graphics.RectF;
 import android.os.Build;
 import android.support.annotation.NonNull;
 import android.support.annotation.Nullable;
 import android.support.annotation.Size;
 import android.support.v7.widget.RecyclerView;
 import android.util.Log;
+import android.view.DragEvent;
 import android.view.View;
 import android.view.ViewParent;
 
+import com.google.blockly.android.AbstractBlocklyActivity;
+import com.google.blockly.android.ZoomBehavior;
+import com.google.blockly.android.clipboard.BlockClipDataHelper;
+import com.google.blockly.android.control.BlocklyController;
 import com.google.blockly.model.Block;
 import com.google.blockly.model.WorkspacePoint;
 
@@ -72,6 +81,7 @@ public class WorkspaceHelper {
     private final WorkspacePoint mTempWorkspacePoint = new WorkspacePoint();
     private final int[] mTempIntArray2 = new int[2];
     private final Context mContext;
+    private final ZoomBehavior mZoomBehavior;
 
     private WorkspaceView mWorkspaceView;
     private VirtualWorkspaceView mVirtualWorkspaceView;
@@ -80,12 +90,31 @@ public class WorkspaceHelper {
     private boolean mRtl;
 
     /**
+     * Determine if {@code dragEvent} is a block drag.
+     * @param viewContext The context of the view receiving the drag event.
+     * @param dragEvent The drag event in question.
+     * @return True if the drag represents a block drag. Otherwise false.
+     */
+    public static boolean isBlockDrag(Context viewContext, DragEvent dragEvent) {
+        // Unwrap ContextWrappers until the Activity is found.
+        while (viewContext instanceof ContextWrapper && !(viewContext instanceof Activity)) {
+            viewContext = ((ContextWrapper) viewContext).getBaseContext();
+        }
+        BlocklyController controller = (viewContext instanceof AbstractBlocklyActivity) ?
+                ((AbstractBlocklyActivity) viewContext).getController() : null;
+        BlockClipDataHelper clipHelper =
+                (controller == null) ? null : controller.getClipDataHelper();
+        return (clipHelper != null && clipHelper.isBlockData(dragEvent.getClipDescription()));
+    }
+
+    /**
      * Create a helper for creating and doing calculations for views in the workspace.
      *
      * @param context The {@link Context} of the fragment or activity this lives in.
      */
     public WorkspaceHelper(Context context) {
         mContext = context;
+        mZoomBehavior = ZoomBehavior.loadFromTheme(context);
 
         final Resources res = mContext.getResources();
         mDensity = res.getDisplayMetrics().density;
@@ -139,7 +168,7 @@ public class WorkspaceHelper {
      */
     @Nullable
     public BlockView getView(Block block) {
-        return mViewFactory.getView(block);
+        return (mViewFactory == null) ? null : mViewFactory.getView(block);
     }
 
     /**
@@ -176,6 +205,7 @@ public class WorkspaceHelper {
     /**
      * @return The maximum distance a block can snap to match a connection, in workspace units.
      */
+    // TODO(#477): Return floating point.
     public int getMaxSnapDistance() {
         // TODO(#62): Adapt to WorkspaceView zoom, if connected.
         return DEFAULT_MAX_SNAP_DISTANCE;
@@ -191,7 +221,7 @@ public class WorkspaceHelper {
      *
      * @return The value in virtual view units.
      */
-    public int workspaceToVirtualViewUnits(int workspaceValue) {
+    public int workspaceToVirtualViewUnits(float workspaceValue) {
         return (int) (mDensity * workspaceValue);
     }
 
@@ -437,7 +467,7 @@ public class WorkspaceHelper {
      */
     public void workspaceToVirtualViewCoordinates(WorkspacePoint workspacePosition,
                                                   ViewPoint viewPosition) {
-        int workspaceX = workspacePosition.x;
+        float workspaceX = workspacePosition.x;
         if (mRtl) {
             workspaceX *= -1;
         }
@@ -514,10 +544,39 @@ public class WorkspaceHelper {
     }
 
     /**
+     * Gets the visible bounds of the workspace, in workspace units.
+     *
+     * @param outRect The {@link RectF} in which to store the bounds values.
+     * @return {@code outRect}
+     */
+    public RectF getViewableWorkspaceBounds(RectF outRect) {
+        mTempViewPoint.set(0, 0);
+        virtualViewToWorkspaceCoordinates(mTempViewPoint, mTempWorkspacePoint);
+        outRect.left = (int) mTempWorkspacePoint.x;
+        outRect.top = (int) mTempWorkspacePoint.y;
+
+        mTempViewPoint.set(mWorkspaceView.getWidth(), mWorkspaceView.getHeight());
+        virtualViewToWorkspaceCoordinates(mTempViewPoint, mTempWorkspacePoint);
+        outRect.right = (int) mTempWorkspacePoint.x;
+        outRect.bottom = (int) mTempWorkspacePoint.y;
+        return outRect;
+    }
+
+    /**
+     * @return The ZoomBehavior for workspaces in this context.
+     */
+    public ZoomBehavior getZoomBehavior() {
+        return mZoomBehavior;
+    }
+
+    /**
      * Updates the current RTL state for the app.
+     *
+     * Lint Suppressed as plan is to support down to API 16.
      *
      * @param resources The context resources to get the RTL setting from.
      */
+    @SuppressLint("ObsoleteSdkInt")
     private void updateRtl(Resources resources) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1) {
             mRtl = resources.getConfiguration().getLayoutDirection()
@@ -525,24 +584,5 @@ public class WorkspaceHelper {
         } else {
             mRtl = false;  // RTL not supported.
         }
-    }
-
-    /**
-     * Gets the visible bounds of the workspace, in workspace units.
-     *
-     * @param outRect The {@link Rect} in which to store the bounds values.
-     * @return {@code outRect}
-     */
-    public Rect getViewableWorkspaceBounds(Rect outRect) {
-        mTempViewPoint.set(0, 0);
-        virtualViewToWorkspaceCoordinates(mTempViewPoint, mTempWorkspacePoint);
-        outRect.left = mTempWorkspacePoint.x;
-        outRect.top = mTempWorkspacePoint.y;
-
-        mTempViewPoint.set(mVirtualWorkspaceView.getWidth(), mVirtualWorkspaceView.getHeight());
-        virtualViewToWorkspaceCoordinates(mTempViewPoint, mTempWorkspacePoint);
-        outRect.right = mTempWorkspacePoint.x;
-        outRect.bottom = mTempWorkspacePoint.y;
-        return outRect;
     }
 }

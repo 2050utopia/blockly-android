@@ -14,48 +14,75 @@
  */
 package com.google.blockly.model;
 
-import android.test.AndroidTestCase;
+import org.junit.Test;
+
+import static com.google.common.truth.Truth.assertThat;
 
 /**
  * Tests for {@link FieldAngle}.
  */
-public class FieldAngleTest extends AndroidTestCase {
-    public void testFieldAngle() {
+public class FieldAngleTest {
+    @Test
+    public void testConstructor() {
         FieldAngle field = new FieldAngle("name", 0);
-        assertEquals(Field.TYPE_ANGLE, field.getType());
-        assertEquals("name", field.getName());
-        assertEquals(0, field.getAngle());
+        assertThat(field.getType()).isEqualTo(Field.TYPE_ANGLE);
+        assertThat(field.getName()).isEqualTo("name");
+        assertThat(field.getAngle()).isEqualTo(0f);
+    }
 
-        field = new FieldAngle("360", 360);
-        assertEquals("360", field.getName());
-        assertEquals(360, field.getAngle());
+    @Test
+    public void testWrapAround() {
+        FieldAngle field = new FieldAngle("name", 360);
+        assertThat(field.getAngle()).isEqualTo(0f);
 
-        field = new FieldAngle("name", 720);
-        assertEquals(0, field.getAngle());
+        field.setAngle(720f);
+        assertThat(field.getAngle()).isEqualTo(0f);
 
-        field = new FieldAngle("name", -180);
-        assertEquals(180, field.getAngle());
+        field.setAngle(-180f);
+        assertThat(field.getAngle()).isEqualTo(180f);
 
-        field = new FieldAngle("name", 10000);
-        assertEquals(280, field.getAngle());
+        field.setAngle(10000f);
+        assertThat(field.getAngle()).isEqualTo(280f);
 
-        field = new FieldAngle("name", -10000);
-        assertEquals(80, field.getAngle());
+        field.setAngle(-10000f);
+        assertThat(field.getAngle()).isEqualTo(80f);
 
-        field.setAngle(360);
-        assertEquals(360, field.getAngle());
-        field.setAngle(27);
-        assertEquals(27, field.getAngle());
-        field.setAngle(-10001);
-        assertEquals(79, field.getAngle());
+        field.setAngle(27f);
+        assertThat(field.getAngle()).isEqualTo(27f);
+
+        field.setAngle(-10001f);
+        assertThat(field.getAngle()).isEqualTo(79f);
+    }
+
+    @Test
+    public void testParseValue() {
+        FieldAngle field = new FieldAngle("name", 0);
 
         // xml parsing
-        assertTrue(field.setFromString("-180"));
-        assertEquals(180, field.getAngle());
-        assertTrue(field.setFromString("27"));
-        assertEquals(27, field.getAngle());
-        assertFalse(field.setFromString("this is not a number"));
+        assertThat(field.setFromString("-180")).isTrue();
+        assertThat(field.getAngle()).isEqualTo(180f);
+        assertThat(field.setFromString("27")).isTrue();
+        assertThat(field.getAngle()).isEqualTo(27f);
+        assertThat(field.setFromString("this is not a number")).isFalse();
+    }
 
-        assertNotSame(field, field.clone());
+    @Test
+    public void testClone() {
+        FieldAngle field = new FieldAngle("name", 5);
+        FieldAngle clone = field.clone();
+
+        assertThat(field).isNotSameAs(field.clone());
+        assertThat(clone.getName()).isEqualTo(field.getName());
+        assertThat(clone.getAngle()).isEqualTo(field.getAngle());
+    }
+
+    @Test
+    public void testObserverEvent() {
+        FieldTestHelper.testObserverEvent(new FieldAngle("ANGLE", 0),
+                /* New value to assign */ "15",
+                /* oldValue */ "0",
+                /* newValue */ "15");
+        FieldTestHelper.testObserverNoEvent(new FieldAngle("ANGLE", 0));
+        FieldTestHelper.testObserverNoEvent(new FieldAngle("ANGLE", 0), "360");
     }
 }
